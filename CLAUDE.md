@@ -3,22 +3,64 @@
 ## Project Context
 This is a scientific forward model, originally written in MATLAB, being translated to Python. Many physics components are not yet written - the MATLAB source itself is a work in progress. Existing "benchmarks" are coarse tests confirming fundamental behaviours in a couple of run modes; the complete model is not yet built or fully running. The immediate task is translating what exists, preserving equations and logic, then continuing development (including new physics) in Python. Coarse existing benchmarks will be turned into more rigorous tests over time - it's fine for those to be finalized in Python rather than matched exactly against MATLAB.
 
-## Strict Rules for Modifying Code
+## Behavioural Rules
+
+### 1. Think Before Coding
+Don't assume. Don't hide confusion. Surface tradeoffs.
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+Minimum code that solves the problem. Nothing speculative.
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- Do not create abstractions unless they reduce real, measurable complexity, or facilitate important elements of code modularity.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+- Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+- Three similar lines of code is better than a premature abstraction.
+- This is scientific model code - interpretability of an equation or algorithm is more important than "clean abstraction" using typical software development principles.
+
+### 3. Surgical Changes
+Touch only what you must. Clean up only your own mess.
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently. Do make recommendations for what you'd change to improve structure or use alternative tools better suited to a task.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+- The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+Define success criteria. Loop until verified. Every changed line should trace directly to the task.
+
+Transform tasks into verifiable goals:
+
+"Add validation" → "Write tests for invalid inputs, then make them pass"
+"Fix the bug" → "Write a test that reproduces it, then make it pass"
+"Refactor X" → "Ensure tests pass before and after"
+For multi-step tasks, state a brief plan:
+
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## Strict Rules for Modifying Code and translating code to python from matlab
 1. DO NOT modify equations, or function logic inputs/outputs unless strictly necessary and then only after explicit approval. Variable and function names should be preserved in meaning/identity, but may be reformatted to PEP8 convention during translation (e.g. MATLAB `camelCase` -> Python `snake_case`) - see the PEP8 Formatting section below for what's in and out of scope for this.
 2. DO NOT change or remove any existing code comments - replicate those that are already present EXACTLY. Code comments often capture specific logical, mathematical, or physics reasoning from when the code was written, and are treated as historical record, not just description - preserve verbatim, even if terse, outdated-looking, or oddly placed. Docstrings have more flexibility: syntax/format may be converted to Python-appropriate conventions (e.g. numpy/Google style), but the underlying descriptive content/text must be preserved, not rewritten or reworded. In both cases, keep any new additions minimal and lightweight - the goal is that what's new stays easy to distinguish from what's preserved, and added commentary doesn't bury or dilute the original.
 3. DO feel free to flag necessary changes or things that are now out of place as a result of the above strict rules. User will make judgement calls on what to incorporate.
-
-## Code Style
-When modifying existing code, match the patterns already in the file.
-Match the existing style, even if you'd do it differently, but make recommendations for what you'd change to improve structure or use alternative tools.
-
-## Abstractions
-Do not create abstractions unless they reduce real, measurable complexity, or facilitate important elements of code modularity.
-No interfaces with a single implementation.
-No factory functions that produce one type.
-No wrapper classes that just delegate to another class.
-Three similar lines of code is better than a premature abstraction.
-This is scientific model code - interpretability of an equation or algorithm is more important than "clean abstraction" using typical software development principles.
 
 ## Tests
 Never modify existing tests unless the change intentionally updates the behaviour they cover, or we are explicitly working to fix the test itself.
@@ -29,13 +71,6 @@ Fix your code to make the existing test pass.
 Default to writing only brief (single line or less) comments per logical grouping of lines.
 Reference existing code for style.
 Add a comment when the WHY is non-obvious, or to briefly state the purpose of a block of code.
-
-## Scope
-Keep changes scoped to exactly what was requested.
-Don't "improve" adjacent code.
-Don't refactor things that aren't broken.
-Don't add features that weren't asked for.
-Every changed line should trace directly to the task.
 
 ## Git
 Never run git operations without a user's explicit request.
