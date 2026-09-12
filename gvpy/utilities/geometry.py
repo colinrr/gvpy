@@ -7,7 +7,7 @@ Translated from MATLAB source: GV_for_claude/utilities/geometry/
 import numpy as np
 
 
-def get_elliptical_cylinder_sa(a, c, l=1, halved=True):
+def get_elliptical_cylinder_sa(a: float, c: float, l: float =1, halved: bool=True):
     """Ellipse perimeter approximation of Ramanujan.
 
     a, c = axes lengths. a is nominally semi-major but not critical

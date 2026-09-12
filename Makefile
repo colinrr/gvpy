@@ -14,10 +14,10 @@ PYTHON_INTERPRETER = python
 ## Install Python dependencies
 .PHONY: requirements
 requirements:
-	pip install -e .
+# 	pip install -e .
+	conda-lock --file pyproject.toml
+	conda-lock install -n $(PROJECT_NAME) conda-lock.yml
 	
-
-
 
 ## Delete all compiled Python files
 .PHONY: clean

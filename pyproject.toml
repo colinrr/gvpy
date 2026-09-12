@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "attrs",
     "ipython",
     "jupyterlab",
     "loguru",
@@ -36,6 +37,10 @@ dependencies = [
 ]
 requires-python = "~=3.13.0"
 
+[project.optional-dependencies]
+dev = [
+    "conda-lock",
+]
 
 [tool.ruff]
 line-length = 99
@@ -49,3 +54,8 @@ extend-select = ["I"]  # Add import sorting
 known-first-party = ["gvpy"]
 force-sort-within-sections = true
 
+[tool.conda-lock]
+channels = [
+    "conda-forge",
+    "defaults"
+]

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/Users/crowell/code/research_projects/katla"
+    ],
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob"
+    ],
+    "ask": [
+      "Bash(git *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Edit(/Users/crowell/code/research_projects/katla/katlaGV)",
+      "Write(/Users/crowell/code/research_projects/katla/katlaGV)",
+      "Edit(/Users/crowell/code/research_projects/katla/hydroplume_emulator)",
+      "Write(/Users/crowell/code/research_projects/katla/hydroplume_emulator)"
+    ]
+  }
+}
