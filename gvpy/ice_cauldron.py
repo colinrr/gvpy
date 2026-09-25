@@ -60,7 +60,7 @@ PerCauldronInput = Union[Number, Sequence[Number]]
 # and line-for-line traceability to the MATLAB source, which hand-written checks would not.
 
 
-@attrs.define
+@attrs.define(repr=False)  # custom __repr__ below (groups scalar vs. per-cauldron vs. calculated params)
 class IceCauldron:
     """Cauldron class to hold simulation parameters.
      - geometry
@@ -284,12 +284,6 @@ class IceCauldron:
             self.params["Q_per_L"] = ("cauldron", self.params["Q_n"].values / L_n)
         elif self.geometry == "spheroid":
             raise NotImplementedError("Spheroid geometry is not currently implemented")
-            # TRANSLATION NOTE: MATLAB set obj.Q_per_L = nan and obj.L_n = nan immediately
-            # before this error() call. Since MATLAB's error() halts execution and the object
-            # is never returned, those assignments have no observable effect - dropped as dead
-            # code rather than translated, since keeping them would add lines with no behavior
-            # change. Flagging per Strict Rule #3 since this is a (behavior-neutral)
-            # simplification, not a pure syntax conversion.
 
         C = self.CONSTANTS
 
@@ -298,11 +292,6 @@ class IceCauldron:
         self.params["melt_vol_per_s"] = ("cauldron", self.chi * self.params["Q_n"].values)
 
         _, _, _, self.theta_i, self.theta_b = self.get_elevation_profiles(1)
-        # TRANSLATION NOTE: get_elevation_profiles is translated here (ahead of the planned
-        # dependency order for the remaining @IceCauldron method files) because the MATLAB
-        # constructor calls it directly (obj.getElevationProfiles(1)) - it's a hard dependency
-        # for __post_init__ to run at all. All other @IceCauldron methods remain deferred to
-        # the next translation pass as planned.
 
         self.get_dimensional_scales()
 
@@ -314,6 +303,42 @@ class IceCauldron:
 
         if not self.disable_plume_flux:
             self.plume_emulator = self.load_emulator()
+
+    def summary(self, verbose: bool = False) -> str:
+        """Human-readable summary of this IceCauldron's parameters, grouped into
+        scalar (non-per-cauldron) parameters, per-cauldron parameters, and -
+        only if verbose=True - calculated/derived parameters that aren't
+        constructor inputs (attrs fields with init=False).
+        """
+        per_cauldron_names = set(self.per_cauldron_fields)
+        fields = attrs.fields(type(self))
+
+        scalar_fields = [f for f in fields if f.init and f.name not in per_cauldron_names]
+        calculated_fields = [f for f in fields if not f.init and f.name != "params"]
+
+        lines = [f"IceCauldron ({self.geometry}, n_cauldrons={self.n_cauldrons})"]
+
+        lines.append("\nScalar parameters:")
+        for f in scalar_fields:
+            if f.name == "n_cauldrons":
+                continue  # already shown in the header above
+            lines.append(f"  {f.name} = {getattr(self, f.name)!r}")
+
+        lines.append("\nPer-cauldron parameters:")
+        if self.params is not None:
+            lines.append("  " + str(self.params).replace("\n", "\n  "))
+        for name in ("open_cauldron", "ice_free_cauldron"):
+            lines.append(f"  {name} = {getattr(self, name)!r}")
+
+        if verbose:
+            lines.append("\nCalculated parameters (not constructor inputs):")
+            for f in calculated_fields:
+                lines.append(f"  {f.name} = {getattr(self, f.name)!r}")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return self.summary(verbose=False)
 
     # TODO: build constants and units functions
     def get_dimensional_scales(self):
@@ -508,15 +533,18 @@ class IceCauldron:
 
         # Get which cauldrons are ice free at which time steps
         if full_output:
-            # TRANSLATION NOTE: `events` is expected to carry the same information as MATLAB's
-            # events table (columns indexName, cauldronIndex, t) - the Python ODE-events
-            # machinery this depends on hasn't been translated yet, so this branch is untested
-            # and its exact `events` structure (DataFrame? dict of arrays?) is not yet settled.
+            # TRANSLATION NOTE: `events` carries the same information as MATLAB's events table
+            # (columns indexName, cauldronIndex, t; cauldronIndex is 0-based). The three columns
+            # are read as plain numpy so this works for xarray/pandas/dict containers alike.
+            # As in MATLAB (`t >= []`), a cauldron that never reached ice-free gives an empty
+            # ev_t[event_idx] and a broadcast error - runs need every cauldron ice-free before
+            # t_final. Branch first exercised by gv_main's post-processing.
+            ev_name, ev_ci, ev_t = (np.asarray(events[k]) for k in ("indexName", "cauldronIndex", "t"))
             ice_free = np.zeros((a.shape[0], self.n_cauldrons), dtype=bool)
             f_i_n = np.zeros((a.shape[0], self.n_cauldrons))
             for ci in range(self.n_cauldrons):
-                event_idx = (events["indexName"] == "iceFreeCauldron") & (events["cauldronIndex"] == ci)
-                ice_free[:, ci] = t >= events["t"][event_idx]
+                event_idx = (ev_name == "iceFreeCauldron") & (ev_ci == ci)
+                ice_free[:, ci] = t >= ev_t[event_idx]
         else:
             ice_free = np.zeros(a.shape, dtype=bool)
             # Events timing not included, so can only assume f_i based
@@ -556,6 +584,8 @@ class IceCauldron:
         # structurally rather than with defensive orientation-checking code - see
         # validate_vector_length's TRANSLATION NOTE and CLAUDE.md's Data Structures section.
         # Callers are expected to pass a, c, f_i with consistent, already-aligned shapes.
+        # SHAPE CONVENTION (this project): the cauldron axis is always LAST - a, c, f_i are
+        # (n_cauldrons,) for a single ODE state, or (n_times, n_cauldrons) for a time series.
         assert a.shape == c.shape, "u_melt: Check a_n, c_n sizes."
         assert a.shape == f_i.shape, "u_melt: Check f_i_n size."
 
@@ -566,16 +596,18 @@ class IceCauldron:
             else:
                 i_open = np.zeros(a.shape, dtype=bool)
                 # Will fail if openIdx values are too large or shape is wrong
+                # TRANSLATION NOTE: MATLAB's iOpen(ii,openIdx(ii):end) is laid out [cauldron x
+                # time]; swapped to [time x cauldron] here per the cauldron-axis-last convention
+                # above, and open_idx values are 0-based start indices.
                 for ii in range(self.n_cauldrons):
-                    i_open[ii, open_idx[ii] :] = True
+                    i_open[open_idx[ii] :, ii] = True
         else:
-            # TRANSLATION NOTE: MATLAB's repmat(obj.openCauldron', size(a,2)) tiles the
-            # per-cauldron open_cauldron row vector size(a,2) times along BOTH dimensions
-            # (MATLAB's repmat(V,n) with scalar n tiles n times in every dimension) - genuinely
-            # unclear whether this shape was intended to always match a's actual shape in the
-            # general multi-cauldron case, or only happens to work out for n_cauldrons==1.
-            # Translated literally via np.tile rather than guessing a "corrected" broadcast.
-            i_open = np.tile(self.open_cauldron, (self.n_cauldrons, self.n_cauldrons))
+            # TRANSLATION NOTE: MATLAB's repmat(obj.openCauldron', size(a,2)) is only the right
+            # shape for a single time column (a is [n_cauldrons x 1], the ODE right-hand-side
+            # case); my earlier literal np.tile translation substituted n_cauldrons for size(a,2)
+            # and failed for every n. Replaced (with user approval) by a broadcast of the
+            # per-cauldron open_cauldron state along the cauldron (last) axis of a.
+            i_open = np.broadcast_to(self.open_cauldron, a.shape)
         if ice_free_idx is not None:
             if np.shape(ice_free_idx) == a.shape:
                 i_ice_free = ice_free_idx
@@ -583,9 +615,9 @@ class IceCauldron:
                 i_ice_free = np.zeros(a.shape, dtype=bool)
                 # Will fail if openIdx values are too large or shape is wrong
                 for ii in range(self.n_cauldrons):
-                    i_ice_free[ii, ice_free_idx[ii] :] = True
+                    i_ice_free[ice_free_idx[ii] :, ii] = True
         else:
-            i_ice_free = np.tile(self.ice_free_cauldron, (self.n_cauldrons, self.n_cauldrons))
+            i_ice_free = np.broadcast_to(self.ice_free_cauldron, a.shape)
 
         u_melt = np.zeros(a.shape)
         v_melt = np.zeros(a.shape)
@@ -601,11 +633,6 @@ class IceCauldron:
                 u_melt[~i_open] = bar_u_melt[~i_open] / bar_alpha
                 v_melt[~i_open] = self.alpha * u_melt[~i_open]
             except:  # noqa: E722 - TRANSLATION NOTE: MATLAB's bare `catch ME` (unused ME) catches everything; preserved as a bare except.
-                # TRANSLATION NOTE: MATLAB's catch body is literally `faafo` - undefined-function
-                # placeholder dev text (not valid MATLAB command syntax with args, just a bare
-                # call), preserved as-is per CLAUDE.md's in-development-components policy. Will
-                # raise NameError if ever triggered, same as MATLAB raising an "undefined
-                # function" error.
                 faafo()
 
         # --- OPEN CAULDRON CONDITION ----
@@ -672,6 +699,15 @@ class IceCauldron:
             a_n.shape == c_n.shape == V_ice_n.shape == V_w_n.shape == V_p_n.shape == V_cavity_n.shape
         ), "Input variable dimensions do not match."
 
+        # TRANSLATION NOTE: cauldron axis is LAST - inputs may be a single ODE state
+        # (n_cauldrons,) (the right-hand-side case) or a (n_times, n_cauldrons) series. A single
+        # state is promoted to one time step and the outputs squeezed back below (replaces
+        # MATLAB's checkVectorOrientation handling, per user-approved shape convention).
+        squeeze = np.ndim(a_n) == 1
+        V_ice_n, V_w_n, V_p_n, V_cavity_n, a_n, c_n = (
+            np.atleast_2d(x) for x in (V_ice_n, V_w_n, V_p_n, V_cavity_n, a_n, c_n)
+        )
+
         n_steps = a_n.shape[0]
 
         H_i_n = np.zeros(a_n.shape)
@@ -718,12 +754,16 @@ class IceCauldron:
                 # NOTE: these functions WILL NOT bound the cumulative heights
                 # -> !! Currently the open cauldron transition may produce a
                 # discontinuous change in heights and therefore water pressures
+                # TODO - iron out cumulative heights
+                # TODO - iron out step change in pressures as needed
                 A_c = 2 * a_n[:, nc] * self.params["L_n"].values[nc]
                 H_p_n[:, nc] = V_p_n[:, nc] / A_c
                 H_w_n[:, nc] = V_w_n[:, nc] / A_c
                 H_i_n[:, nc] = V_ice_n[:, nc] / A_c
 
         H_cum_n = H_p_n + H_w_n + H_i_n
+        if squeeze:
+            H_i_n, H_w_n, H_p_n, H_cum_n = H_i_n[0], H_w_n[0], H_p_n[0], H_cum_n[0]
         return H_i_n, H_w_n, H_p_n, H_cum_n
 
     # ------------------------------- PLUME ---------------------------------

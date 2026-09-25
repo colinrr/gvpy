@@ -7,7 +7,7 @@ them - see the source files for full context on each). Grouped by relevance:
 what changed or was dropped, what's a known bug or in-development gap, and
 what decisions are still ahead.
 
-Last updated: 2026-09-12
+Last updated: 2026-09-20
 
 ## Changed Functionality / Removed Components
 
@@ -61,6 +61,67 @@ intentional, flagged decisions).
   `gvpy.config` module (removed); `ice_cauldron.py` imported `ThermoConstants`
   from the wrong path, `.constants` instead of `.utilities.constants` (fixed).
 
+### Solver (`glaciovolcano.py`, `gv_main.py`, `utilities/solver_helpers.py`)
+
+- **Shape convention: the cauldron axis is always LAST** - `(n,)` for a single
+  ODE state, `(n_times, n_cauldrons)` for a series (matches xarray
+  `(time, cauldron)`). Adopting it required user-approved edits to
+  already-translated `IceCauldron` methods, because the RHS passes 1-D state
+  slices and two methods could not handle them:
+  - `get_u_melt`: the fallback open/ice-free masks are now
+    `np.broadcast_to(self.open_cauldron, a.shape)` (my earlier `np.tile`
+    substituted `n_cauldrons` for MATLAB's `size(a,2)` and failed for every
+    n - MATLAB's `repmat(obj.openCauldron', size(a,2))` is only right for a
+    single time column, the RHS case). The per-cauldron start-index branch is
+    laid out `(time, cauldron)` and 0-based.
+  - `get_material_heights`: accepts `(n,)` (promoted to one time step,
+    outputs squeezed back). The squeeze logic is on the Todo list for review.
+  - `get_f_i` full-output branch: reads the events columns as plain numpy so it
+    works for any events container; `cauldronIndex` is 0-based.
+- **`ode15s` -> `scipy.integrate.solve_ivp(method="BDF")`**, `rtol=1e-7` as in
+  MATLAB, `atol` left at SciPy's default (1e-6, the same as MATLAB's default
+  `AbsTol`). Not guaranteed equivalent step control. MATLAB's `odeset`
+  `NonNegative` (all states) has no SciPy equivalent and is NOT replicated.
+- **Restart at the event time (deliberate change from MATLAB).** MATLAB
+  restarts each post-event segment on `timespan(timespan>=t(end))`, the next
+  output-grid point, but seeds it with the state at the event time. That
+  freezes the state for up to one output step (~5 s here) and delays every
+  later event. On a throwaway replica of a single-cauldron run this gave a
+  relative RMSE of ~3e-3 on cavity volume with MATLAB-style restarts versus
+  ~3e-11 restarting at the event time. It is a pure time relabeling while the
+  ODE is autonomous, but would become a real error once explicit-time terms
+  (e.g. `t_Qdecay`) exist. Python restarts at the event time and keeps the
+  grid points after it.
+- **The MATLAB benchmark RMSE thresholds are not being used** as test targets
+  (too weak/rough, per project direction); new benchmarks are to be designed.
+- **Terminal event point handling**: like `ode15s`, the terminal event point is
+  appended as the last row of each segment (SciPy with `t_eval` only returns the
+  grid points).
+- **Events**: MATLAB's vector-valued `gvEvents` becomes one scalar callable per
+  event (`solve_ivp` requirement), with `terminal`/`direction` read from a probe
+  call at `y0`; the events index table is built once and passed in (MATLAB
+  rebuilds it every call). The events table (`get_events_table`) is a pandas
+  DataFrame with 0-based `cauldronIndex` (NaN for non-per-cauldron events).
+- **Result container**: `gv_main` returns a `GVResult` (`.gv`, `.data` =
+  xarray Dataset dims time x cauldron, `.events` = xarray Dataset dim `event`)
+  instead of MATLAB's single `dat` struct. Variable names keep the MATLAB keys
+  (e.g. `horizontalMeltingRate_n`) so `derived_vars()` still lines up.
+- **Inputs**: a dict and/or keyword arguments using the Python `IceCauldron`
+  field names (`nCauldrons` -> `n_cauldrons`, ...), instead of a struct /
+  name-value pairs.
+- **Dropped or replaced**: `pathConfig` (MATLAB path setup), `tic`/`toc` (kept
+  only in `run_single.py`), the unused `global step_ct`, re-creating the ODE
+  `options` after each event (event functions read `gv`, mutated in place, at
+  call time), and `assign_integrated_values`'s `solutions` flag (redundant with
+  the axis-last convention).
+- **Value vs. reference semantics**: MATLAB's `IceCauldron` is a value class;
+  the attrs one is mutable. `parse_events` mutates `gv` in place, and the
+  post-processing reconstruction loop works on a `copy.copy(gv)`.
+- **`InitialStep` guard**: MATLAB's `t(nt)-t(nt-refine)` errors when fewer than
+  `refine + 1` points precede the event; Python negative indexing would silently
+  wrap, so it raises `IndexError` explicitly. The step is also capped at the
+  remaining span (SciPy raises if `first_step` exceeds it; `ode15s` just clips).
+
 ## Known Bugs and In-Development Issues
 
 Preserved from the MATLAB source as-is, per CLAUDE.md's in-development-
@@ -95,15 +156,26 @@ visibility since some of these make entire code paths currently unusable.
   specifically, this is confirmed (via test) to be unreachable dead code
   under normal, already-shape-validated inputs - the `try` body is a plain
   numpy assignment that doesn't fail in ordinary use.
-- **`get_u_melt`'s fallback `i_open`/`i_ice_free` construction** (when
-  `open_idx`/`ice_free_idx` aren't supplied) translates MATLAB's
-  `repmat(obj.openCauldron', size(a,2))` literally via `np.tile`, but it's
-  genuinely unclear whether the resulting shape was intended to generalize
-  to multi-cauldron cases, or only happens to work for `n_cauldrons == 1`.
-  Not guessed at further - flagged inline.
-- **`get_f_i`'s full-output/`events` branch is untested** - it depends on an
-  `events` table structure from the not-yet-translated ODE solver/events
-  system, whose exact shape (DataFrame? dict of arrays?) isn't settled yet.
+- **`get_f_i`'s full-output/`events` branch** is now exercised by `gv_main`'s
+  post-processing (one informal single-cauldron run), but has no pytest
+  coverage yet. Like MATLAB, a run needs every cauldron to reach ice-free before
+  `t_final`: otherwise `ev_t[event_idx]` is empty and numpy raises a broadcast
+  error (MATLAB: `t >= []`), after the solve has finished.
+- **Simultaneous solver events** raise `NotImplementedError` in `parse_events`
+  (MATLAB turns `y0` into a matrix and errors on the next solve).
+- **`openTime`/`iceFreeTime` zero-fill**: MATLAB silently zero-fills these for a
+  cauldron without the event; translated literally (zeros). Unreachable in
+  practice because `get_f_i` already fails unless every cauldron went ice-free,
+  and a cauldron opens before it can go ice-free.
+- **`get_material_heights` in the RHS**: its results only feed
+  `get_drainage_fluxes` (dummy zeros), yet it runs two `minimize_scalar` calls
+  per cauldron per RHS call (removable overhead, MATLAB does the same). At the
+  initial state (`c_n = 0`, `V_cavity = 0`) it also divides by zero and emits
+  `RuntimeWarning`s, and its `assert H_w >= 0` could in principle trip on
+  optimizer tolerance (SciPy vs `fminbnd`) - not seen so far.
+- **Only one `gv_main` configuration has been run so far** (single cauldron,
+  `G_n=400`, no ice inflow, no supraglacial drainage). Multi-cauldron and
+  supraglacial-overflow runs are untested.
 - **`t_Qdecay`** is declared as an `IceCauldron` property in MATLAB but never
   assigned anywhere in the source - left as `None` in Python, not guessed at.
 - **Plume emulator JSON is intentionally absent.** The default
@@ -126,13 +198,16 @@ expect needing a call on in upcoming translation/development work.
   `h_i`/`l`) will require figuring out what those were actually supposed to
   be - likely re-deriving them from `x` via `get_elevation_profiles`/
   `get_l_lambda`, but that's a physics judgment call, not a translation one.
-- **`get_q_s.m` translation** (supraglacial drainage) is still ahead. Per
-  project direction, this is its own distinct model component (like plume
-  and subglacial drainage), so it gets the same treatment: a top-level
-  `gvpy/supraglacial.py` module for any standalone helpers, and its
-  `IceCauldron` method grouped under its own flagged section in
-  `ice_cauldron.py` - plus the same `checkVectorOrientation`-removal and
-  `faafo`-bug-preservation treatment applied elsewhere.
+- **Test designs for the solver** (next session): new, more robust
+  benchmarks/tests for `glaciovolcano.py` / `gv_main.py` that conceptually cover
+  the same physics and use cases as the MATLAB benchmarks (basic cauldron
+  growth, multi-cauldron, supraglacial drainage, drainage density) without their
+  RMSE thresholds - to be worked out together.
+- **Results dashboard plot** (the `TODO` in `run_single.py`), together with
+  `getVarLabels.m` / a future `gvpy/plotting.py`.
+- **`NonNegative` handling**: not replicated; whether any state can go
+  negative in practice (and if so, clipping in the RHS vs. leaving it to events)
+  is open.
 - **`getVarLabels.m`**: per project direction, this is plotting tooling, not
   model physics/state - it belongs with plotting output (a `gvpy/plotting.py`
   module, not yet created), not as an `IceCauldron` method. Whether its
@@ -140,8 +215,9 @@ expect needing a call on in upcoming translation/development work.
   flagged architecture question) is still open.
 - **`open_cauldron`/`ice_free_cauldron` migrating out of `IceCauldron`**
   into a separate mutable solver-state structure (already flagged inline in
-  `ice_cauldron.py`) - deferred until the ODE solver/events system exists
-  and the methods that read/write this state are all translated.
+  `ice_cauldron.py`) - now unblocked, since `gv_main` exists: it currently
+  mutates them in place (`parse_events`) and reassigns them on a copy for the
+  post-processing loop.
 - **Plume emulator revamp**: both the emulator JSON itself (needs
   regeneration/correction) and `predictForest`/`predictTree`'s home -
   currently sourced from `physics_sandbox_2023/predictForest.m`, a
@@ -151,7 +227,3 @@ expect needing a call on in upcoming translation/development work.
   currently stubs both; once real physics is designed, it may make sense to
   split them into separate functions/components rather than one combined
   (currently dummy) call.
-- **ODE solver + events system translation** (`glaciovolcano.m`, `gvMain.m`)
-  is the biggest remaining unblock - several already-translated branches
-  (`get_f_i`'s full-output mode, the eventual open-cauldron/ice-free state
-  transitions) can't be exercised or tested until it exists.
