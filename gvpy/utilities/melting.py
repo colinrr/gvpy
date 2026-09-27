@@ -9,7 +9,7 @@ import numpy as np
 from scipy.integrate import quad
 
 
-def get_elliptic_heat_intensity(alpha):
+def get_elliptic_heat_intensity(alpha: float) -> float:
     """Returns bar_alpha, the ratio of horizontal melt rate to average melt rate
     as a function of alpha.
 
@@ -20,7 +20,7 @@ def get_elliptic_heat_intensity(alpha):
     #   - u_melt --> da/dt
     #   -
 
-    def int_fun(theta):
+    def int_fun(theta: float) -> float:
         return alpha / (np.sin(theta) ** 2 + alpha**2 * np.cos(theta) ** 2) ** (1 / 2)
 
     # TRANSLATION NOTE: MATLAB's integral() maps to scipy.integrate.quad here, which returns

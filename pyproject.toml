@@ -17,6 +17,8 @@ classifiers = [
 ]
 dependencies = [
     "attrs",
+    "holoviews",
+    "hvplot",
     "ipython",
     "jupyterlab",
     "loguru",
@@ -25,6 +27,7 @@ dependencies = [
     "notebook",
     "numpy",
     "pandas",
+    "panel",
     "pip",
     "pytest",
     "python-dotenv",
@@ -53,6 +56,10 @@ extend-select = ["I"]  # Add import sorting
 [tool.ruff.lint.isort]
 known-first-party = ["gvpy"]
 force-sort-within-sections = true
+
+[tool.pytest.ini_options]
+# Missing units/labels metadata (IceCauldron.VAR_INFO) fails tests, though it only warns at runtime
+filterwarnings = ["error::gvpy.ice_cauldron.MissingVarInfoWarning"]
 
 [tool.conda-lock]
 channels = [

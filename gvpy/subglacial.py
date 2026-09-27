@@ -17,11 +17,16 @@ here are preserved as-is per CLAUDE.md's in-development-components policy,
 not silently fixed.
 """
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from scipy.optimize import fsolve
 
+if TYPE_CHECKING:  # annotation only - avoids a circular import
+    from .ice_cauldron import IceCauldron
 
-def get_x_equals_l_lambda(cauldron):
+
+def get_x_equals_l_lambda(cauldron: "IceCauldron") -> float:
     """x_crit = get_x_equals_l_lambda(obj)
     Find the coordinate x at which x = l_lambda as defined by 1/4 * flexural
     wavelenth
@@ -34,7 +39,7 @@ def get_x_equals_l_lambda(cauldron):
     l_const = np.pi / 2 * (cauldron.E_prime / (12 * cauldron.CONSTANTS.G * cauldron.CONSTANTS.RHO_ICE)) ** (1 / 4)
 
     # Polynomial in x to get l_lambda_crit
-    def ff(x):
+    def ff(x: np.ndarray) -> np.ndarray:
         return (x / l_const) ** (4 / 3) - x * A - h_i0
 
     _, _, l_lambda_0 = cauldron.get_l_lambda(0)  # Guess from starting val
@@ -50,7 +55,7 @@ def get_x_equals_l_lambda(cauldron):
     return x_crit
 
 
-def objective_delta_p_1(cauldron, u, P_0, rho_f, x):
+def objective_delta_p_1(cauldron: "IceCauldron", u: float, P_0: float, rho_f: float, x: float) -> float | np.ndarray:
     """d_Delta_P = objectiveDeltaP_1(obj,u,P_0,rho_f,x)
     Case of early propagating crack tip:
       -> u_1 = u_tip
@@ -77,7 +82,7 @@ def objective_delta_p_1(cauldron, u, P_0, rho_f, x):
     return d_Delta_P
 
 
-def delta_p_from_bernoulli_1(cauldron, u, P_0, rho_f, x, h_s):
+def delta_p_from_bernoulli_1(cauldron: "IceCauldron", u: float, P_0: float, rho_f: float, x: float, h_s: float | np.ndarray) -> float | np.ndarray:
     """Delta_P_B = Delta_P_from_Bernoulli_1(obj,u,P_0,rho_f,x, h_s)
     Case of early propagating crack tip:
       -> u_1 = u_tip
@@ -112,7 +117,7 @@ def delta_p_from_bernoulli_1(cauldron, u, P_0, rho_f, x, h_s):
     return Delta_P_B
 
 
-def delta_p_from_u_tip(cauldron, u_tip, rho, x):
+def delta_p_from_u_tip(cauldron: "IceCauldron", u_tip: float, rho: float, x: float) -> float:
     """Delta_P = Delta_P_from_U_tip(obj,u_tip,rho,x)
     This function for crack tip velocity is from Tsai & Rice (2012) (Journal
     of Applied Mechanics). It is known to be valid for L_hi_ratio <= 5. It is

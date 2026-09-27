@@ -6,7 +6,7 @@ checkTerminalConditions).
 """
 
 import copy
-from typing import Mapping, Optional
+from collections.abc import Mapping
 
 import attrs
 import numpy as np
@@ -33,7 +33,7 @@ class GVResult:
     events: xr.Dataset
 
 
-def gv_main(gv_in: Optional[Mapping] = None, **kwargs) -> GVResult:
+def gv_main(gv_in: Mapping | None = None, **kwargs: object) -> GVResult:
     """dat = gvMain(varargin)
     COLIN ROWELL, MEGHAN SHARP, MARK JELLINEK, 2024
     Solving coupled ODEs in galciovolcano.m
@@ -255,6 +255,10 @@ def gv_main(gv_in: Optional[Mapping] = None, **kwargs) -> GVResult:
         coords={"time": t_out, "cauldron": np.arange(gv.n_cauldrons)},
     )
 
+    # Units/labels metadata as variable attrs
+    gv.add_var_attrs(data)
+    gv.add_var_attrs(events)
+
     return GVResult(gv=gv, data=data, events=events)
 
 
@@ -268,7 +272,7 @@ def _make_event_functions(gv: IceCauldron, y0: np.ndarray) -> list:
     funcs = []
     for k in range(len(is_term)):
 
-        def event(t, y, k=k):
+        def event(t: float, y: np.ndarray, k: int = k) -> float:
             return gv_events(t, y, gv, index_table)[0][k]
 
         event.terminal = bool(is_term[k])

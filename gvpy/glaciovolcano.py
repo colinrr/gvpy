@@ -3,7 +3,6 @@
 Translated from MATLAB source: glaciovolcano.m
 """
 
-from typing import Union
 
 import numpy as np
 
@@ -11,7 +10,7 @@ from .ice_cauldron import IceCauldron
 from .utilities.solver_helpers import assign_integrated_values
 
 
-def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = False) -> Union[np.ndarray, tuple]:
+def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = False) -> np.ndarray | tuple:
     """[ydot, par] = glaciovolcano(t, y, gv)
     glaciovolcano defines the system of equations (ideally in
     nondimensional form )
@@ -124,6 +123,11 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
             "phi_w": phi_w,
             "phi_p": phi_p,
             "phi_r": 1 - phi_p - phi_w,
+            # Flux terms, exposed for plotting
+            "Q_n": Q_n,
+            "u_ice_bar": u_ice_bar,
+            "q_d_n": q_d_n,
+            "q_c_n": q_c_n,
         }
         return ydot, par
 

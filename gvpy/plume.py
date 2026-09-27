@@ -18,9 +18,10 @@ independently verified.
 """
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 
-def predict_tree(tree, input_vec):
+def predict_tree(tree: dict, input_vec: np.ndarray) -> np.ndarray:
     """Recursively walk a single decision tree (dict, decoded from JSON) to
     predict an output vector for one input sample.
     """
@@ -44,7 +45,7 @@ def predict_tree(tree, input_vec):
         return np.ravel(tree["value"])
 
 
-def predict_forest(forest, X):
+def predict_forest(forest: list[dict], X: ArrayLike) -> np.ndarray:
     """finalPredictions = predictForest(forest, X)
     Average predictions across all trees in a random-forest emulator.
 

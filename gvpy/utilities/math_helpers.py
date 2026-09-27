@@ -4,22 +4,27 @@ model component.
 Translated from MATLAB source: GV_for_claude/utilities/smoothUnion.m
 """
 
+from collections.abc import Callable
+
 import numpy as np
+from numpy.typing import ArrayLike
+
+Kernel = Callable[[float | np.ndarray], float | np.ndarray]
 
 
-def _quadratic_kernel():
+def _quadratic_kernel() -> Kernel:
     return lambda x: (x * (2 + x) + 1) / 4
 
 
-def _cubic_kernel():
+def _cubic_kernel() -> Kernel:
     return lambda x: (1 + 3 * x * (x + 1) - np.abs(x**3)) / 6
 
 
-def _quartic_kernel():
+def _quartic_kernel() -> Kernel:
     return lambda x: (x + 1) ** 2 * (3 - x * (x - 2)) / 16
 
 
-def _circular_kernel():
+def _circular_kernel() -> Kernel:
     return lambda x: 1 + 0.5 * (x - np.sqrt(2 - x**2))
 
 
@@ -31,7 +36,7 @@ _KERNELS = {
 }
 
 
-def smooth_union(a, b, k, kernel="quadratic"):
+def smooth_union(a: ArrayLike, b: ArrayLike, k: float, kernel: str = "quadratic") -> np.ndarray:
     """Return a smooth minimum of two curves a and b.
 
     k      = normalization distance (equals the maximum distance between

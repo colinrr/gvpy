@@ -1,4 +1,7 @@
+import warnings
+
 import numpy as np
+import pytest
 
 from gvpy.ice_cauldron import IceCauldron
 
@@ -19,6 +22,13 @@ class TestVentMeltingIceInflow:
         u_ice_0, u_ice_bar = c.get_u_ice()
         assert u_ice_0 == 0
         assert u_ice_bar == 0
+
+    def test_get_u_ice_per_cauldron_shape(self):
+        for mode in ("off", "fixed-glen"):
+            c = IceCauldron(n_cauldrons=2, G_n=[300, 400], ice_inflow_mode=mode)
+            u_ice_0, u_ice_bar = c.get_u_ice()
+            assert np.shape(u_ice_0) == (2,)
+            assert np.shape(u_ice_bar) == (2,)
 
     def test_get_u_ice_fixed_glen(self):
         c = IceCauldron(ice_inflow_mode="fixed-glen")
@@ -79,3 +89,26 @@ class TestVentMeltingIceInflow:
         assert H_cum.shape == shape
         assert np.all(H_w >= 0)
         assert np.allclose(H_cum, H_p + H_w + H_i)
+
+    def _no_cavity_heights(self, c_n, V_w_n=0.0, V_p_n=0.0, V_cavity_n=0.0):
+        """Closed single cauldron at the initial size (a = 10), with the given volumes."""
+        c = IceCauldron()
+        V_ice_n = c.get_cv_control_volume(np.array([10.0])) - V_cavity_n
+        args = [np.array([v]) for v in (V_ice_n[0], V_w_n, V_p_n, V_cavity_n, 10.0, c_n)]
+        return c, c.get_material_heights(*args)
+
+    def test_get_material_heights_no_cavity_zero_heights(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no RuntimeWarning (0/0) or UserWarning
+            c, (H_i, H_w, H_p, H_cum) = self._no_cavity_heights(c_n=0.0)
+            # Solver-Jacobian-sized perturbations either side of the c_n = 0 boundary
+            self._no_cavity_heights(c_n=0.0, V_cavity_n=0.09, V_w_n=1.5e-14)
+            self._no_cavity_heights(c_n=1.5e-14)
+        assert H_w == 0 and H_p == 0
+        assert H_i == c.params["G_n"].values[0]  # whole column is ice
+        assert H_cum == H_i
+
+    def test_get_material_heights_no_cavity_warns_on_volume(self):
+        with pytest.warns(UserWarning, match="no cavity"):
+            _, (_, H_w, H_p, _) = self._no_cavity_heights(c_n=0.0, V_w_n=1e3)
+        assert H_w == 0 and H_p == 0

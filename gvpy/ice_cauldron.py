@@ -18,11 +18,14 @@ the signature echo is preserved.
 """
 
 import json
-from typing import ClassVar, Optional, Sequence, Union
+import warnings
+from collections.abc import Hashable, Sequence
+from typing import ClassVar
 
 import attrs
 import numpy as np
 import xarray as xr
+from numpy.typing import ArrayLike
 from scipy.optimize import minimize, minimize_scalar
 
 from .plume import predict_forest
@@ -40,15 +43,127 @@ from .utilities.geometry import get_elliptical_cylinder_sa
 from .utilities.math_helpers import smooth_union  # used by get_l_lambda (subglacial drainage, in development)
 from .utilities.melting import get_elliptic_heat_intensity
 from .utilities.validators import (
-    allow_none,
     attrs_range_inclusive,
     attrs_validate_nonnegative,
     attrs_validate_pos_or_nan,
     attrs_validate_positive,
 )
 
-Number = Union[float, int]
-PerCauldronInput = Union[Number, Sequence[Number]]
+Number = float | int
+PerCauldronInput = Number | Sequence[Number]
+
+
+class MissingVarInfoWarning(UserWarning):
+    """A field or output variable has no IceCauldron.VAR_INFO metadata (units, long_name, symbol)."""
+
+
+# Metadata for every field, computed params entry and solver output (see add_var_attrs).
+# Physical (dimensional) units, pint-parseable; "1" = dimensionless, None = non-numeric.
+# Output long_name/symbol are from getVarLabels.m (labels/legend), except a_n and c_n, corrected.
+ICE_CAULDRON_VAR_INFO: dict = {
+    # ---- Fields: cauldron geometry ----
+    "n_cauldrons":        {"units": None,     "long_name": "Number of discrete cauldrons", "symbol": None},
+    "geometry":           {"units": None,     "long_name": "Cauldron geometry approximation", "symbol": None},
+    "L_n":                {"units": "m",      "long_name": "Fissure segment length", "symbol": "L"},
+    "G_n":                {"units": "m",      "long_name": "Cauldron ice thickness", "symbol": "G"},
+    "a_0":                {"units": "m",      "long_name": "Initial radius of bottom heat transfer surface", "symbol": "a_0"},
+    "z_b_n":              {"units": "m",      "long_name": "Relative bedrock elevation at cauldron vent", "symbol": "z_b"},
+    # ---- Fields: drainage glacier geometry ----
+    "L_d_n":              {"units": "m",      "long_name": "Subglacial path length to main drainage inlet", "symbol": "L_d"},
+    "l_G":                {"units": "m",      "long_name": "Horizontal length of outlet glacier path", "symbol": "l_G"},
+    "z_b_0":              {"units": "m",      "long_name": "Relative bedrock elevation of main drainage outlet", "symbol": "z_b_0"},
+    "h_i_0":              {"units": "m",      "long_name": "Ice thickness above main drainage inlet", "symbol": "h_i_0"},
+    "h_i_f":              {"units": "m",      "long_name": "Ice thickness above main drainage outlet", "symbol": "h_i_f"},
+    "b":                  {"units": "m",      "long_name": "Average width of the subglacial drainage sheet", "symbol": "b"},
+    # ---- Fields: ice properties ----
+    "T_f":                {"units": "K",      "long_name": "Ice melting temperature", "symbol": "T_f"},
+    "T_i":                {"units": "K",      "long_name": "Initial ice temperature", "symbol": "T_i"},
+    "A":                  {"units": "Pa^(-{glen_n:g}) s^-1", "long_name": "Glen parameter", "symbol": "A"},  # units follow glen_n
+    "glen_n":             {"units": "1",      "long_name": "Glen's flow law exponent", "symbol": "n"},
+    "E":                  {"units": "Pa",     "long_name": "Young's modulus of glacier ice", "symbol": "E"},
+    "nu":                 {"units": "1",      "long_name": "Poisson's ratio for glacier ice", "symbol": "nu"},
+    # ---- Fields: magma flux & heat transfer ----
+    "V_t_max":            {"units": "m^3",    "long_name": "Estimated total airborne tephra volume", "symbol": "V_t_max"},
+    "Q_decay_frac":       {"units": "1",      "long_name": "Airborne tephra fraction at which plume flux decay is forced", "symbol": None},
+    "Q_0":                {"units": "kg/s",   "long_name": "Total magma discharge rate", "symbol": "Q_0"},
+    "alpha":              {"units": "1",      "long_name": "Vertical/radial ratio of heat transfer rate", "symbol": "alpha"},
+    "f_i":                {"units": "1",      "long_name": "Parameterized heat transfer efficiency: magma->ice", "symbol": "f_i"},
+    "T_m":                {"units": "K",      "long_name": "Magma temperature", "symbol": "T_m"},
+    "rho_m":              {"units": "kg/m^3", "long_name": "Magma density", "symbol": "rho_m"},
+    "rho_p":              {"units": "kg/m^3", "long_name": "Erupted pyroclast density", "symbol": "rho_p"},
+    "rho_r":              {"units": "kg/m^3", "long_name": "Lithic rock density", "symbol": "rho_r"},
+    # ---- Fields: flood/discharge properties ----
+    "fixed_phi_p":        {"units": "1",      "long_name": "Fixed volume fraction of pyroclasts in flood", "symbol": "phi_p"},
+    "manning_roughness":  {"units": "m^(-1/3)*s", "long_name": "Manning's friction coefficient", "symbol": "n_M"},
+    # ---- Fields: calculated/determined internally ----
+    "open_cauldron":      {"units": None,     "long_name": "Cauldron roof open", "symbol": None},
+    "ice_free_cauldron":  {"units": None,     "long_name": "Initial ice mass completely melted", "symbol": None},
+    "chi":                {"units": "m^3/kg", "long_name": "Max volume of ice meltable per kg magma", "symbol": "chi"},
+    "t_Qdecay":           {"units": "s",      "long_name": "Time at which eruption mass flux begins to decay", "symbol": "t_Qdecay"},
+    "tau_ND":             {"units": "s",      "long_name": "Non-dimensional time scale", "symbol": "tau_ND"},
+    "V_ND":               {"units": "m^3",    "long_name": "Non-dimensional volume scale", "symbol": "V_ND"},
+    "L_ND":               {"units": "m",      "long_name": "Non-dimensional length scale", "symbol": "L_ND"},
+    "theta_i":            {"units": "rad",    "long_name": "Slope of outlet glacier ice surface", "symbol": "theta_i"},
+    "theta_b":            {"units": "rad",    "long_name": "Slope of outlet glacier bed surface", "symbol": "theta_b"},
+    "k_nikuradse":        {"units": "m",      "long_name": "Nikuradse roughness height", "symbol": "k_s"},
+    "E_prime":            {"units": "Pa",     "long_name": "Flexural parameter", "symbol": "E'"},
+    "fastest_cauldron_index": {"units": None, "long_name": "Index of fastest-melting cauldron", "symbol": None},
+    "slowest_cauldron_index": {"units": None, "long_name": "Index of slowest-melting cauldron", "symbol": None},
+    # ---- Fields: simulation parameters and switches ----
+    "non_dimensionalized": {"units": None,    "long_name": "Non-dimensionalized equations", "symbol": None},
+    "t_final":            {"units": "s",      "long_name": "End time", "symbol": "t_final"},
+    "timesteps":          {"units": None,     "long_name": "Output timesteps", "symbol": None},
+    "flood_density_model": {"units": None,    "long_name": "Flood fluid density model", "symbol": None},
+    "ice_inflow_mode":    {"units": None,     "long_name": "Ice inflow mode", "symbol": None},
+    "supraglacial_drainage_mode": {"units": None, "long_name": "Supraglacial drainage mode", "symbol": None},
+    "disable_plume_flux": {"units": None,     "long_name": "Plume fluxes disabled", "symbol": None},
+    "terminal_condition": {"units": None,     "long_name": "Terminal condition", "symbol": None},
+    "plume_emulator_json": {"units": None,    "long_name": "Plume emulator JSON file", "symbol": None},
+    "plume_emulator":     {"units": None,     "long_name": "Plume emulator random forest parameters", "symbol": None},
+    "params":             {"units": None,     "long_name": "Per-cauldron parameters", "symbol": None},
+    # ---- Computed params entries ----
+    "Q_n":                {"units": "kg/s",   "long_name": "Cauldron magma discharge rate", "symbol": "Q"},
+    "Q_per_L":            {"units": "kg/s/m", "long_name": "Magma discharge rate per fissure length", "symbol": "Q/L"},
+    "melt_vol_per_s":     {"units": "m^3/s",  "long_name": "Max ice melt volume rate", "symbol": None},
+    "V_melt":             {"units": "m^3",    "long_name": "Melt-out volume scale", "symbol": "V_melt"},
+    "tau_melt":           {"units": "s",      "long_name": "Melt-out time scale", "symbol": "tau_melt"},
+    # ---- Coordinates ----
+    "time":               {"units": "s",      "long_name": "time", "symbol": "t"},
+    "cauldron":           {"units": None,     "long_name": "Cauldron index", "symbol": None},
+    # ---- Solver outputs: solution and derived vars ----
+    "a_n":                {"units": "m",      "long_name": "Cavity 1/2-width", "symbol": "a"},
+    "c_n":                {"units": "m",      "long_name": "Cavity height", "symbol": "c"},
+    "V_ice_n":            {"units": "m^3",    "long_name": "CV Ice Volume", "symbol": "V_{ice}"},
+    "V_w_n":              {"units": "m^3",    "long_name": "Cav. water volume", "symbol": "V_w"},
+    "V_p_n":              {"units": "m^3",    "long_name": "Cav. pyro. volume", "symbol": "V_p"},
+    "V_cavity_n":         {"units": "m^3",    "long_name": "Cavity volume", "symbol": "V_{cav}"},
+    "f_i_n":              {"units": "1",      "long_name": "Melting efficiency", "symbol": "f_i"},
+    "horizontalMeltingRate_n": {"units": "m/s", "long_name": "Hor. Melt Rate", "symbol": "da/dt"},
+    "verticalMeltingRate_n": {"units": "m/s", "long_name": "Vert. Melt Rate", "symbol": "dc/dt"},
+    "V_cum":              {"units": "m^3",    "long_name": "Cum. Volume", "symbol": "V_{cum}"},
+    "V_w_plus_p":         {"units": "m^3",    "long_name": "Water + Pyro Vol.", "symbol": "V_w + V_p"},
+    "V_CV_n":             {"units": "m^3",    "long_name": "Control volume", "symbol": "V_{CV}"},
+    "H_i_n":              {"units": "m",      "long_name": "Ice height", "symbol": "H_i"},
+    "H_w_n":              {"units": "m",      "long_name": "Water height", "symbol": "H_w"},
+    "H_p_n":              {"units": "m",      "long_name": "Pyroclast height", "symbol": "H_p"},
+    "H_cum_n":            {"units": "m",      "long_name": "Cumulative material height", "symbol": "H_{cum}"},
+    # ---- Solver outputs: glaciovolcano par ----
+    "dV_w_dt":            {"units": "m^3/s",  "long_name": "Cavity water volume rate", "symbol": "dV_w/dt"},
+    "dV_p_dt":            {"units": "m^3/s",  "long_name": "Cavity pyroclast volume rate", "symbol": "dV_p/dt"},
+    "dV_ice_dt":          {"units": "m^3/s",  "long_name": "CV ice volume rate", "symbol": "dV_{ice}/dt"},
+    "dV_cavity_dt":       {"units": "m^3/s",  "long_name": "Ice melt volume rate", "symbol": "dV_{i,melt}/dt"},  # holds dV_i_melt_dt
+    "q_s_n":              {"units": "m^3/s",  "long_name": "Supraglacial flux", "symbol": "q_s"},
+    "q_d_n":              {"units": "m^3/s",  "long_name": "Subglacial flux", "symbol": "q_d"},
+    "q_c_n":              {"units": "m^3/s",  "long_name": "Inter-cauldron flux", "symbol": "q_c"},
+    "u_ice_bar":          {"units": "m/s",    "long_name": "Average ice inflow velocity", "symbol": "u_{ice}"},
+    "phi_w":              {"units": "1",      "long_name": "Drainage water volume fraction", "symbol": "phi_w"},
+    "phi_p":              {"units": "1",      "long_name": "Drainage pyroclast volume fraction", "symbol": "phi_p"},
+    "phi_r":              {"units": "1",      "long_name": "Drainage lithic volume fraction", "symbol": "phi_r"},
+    # ---- Solver outputs: events ----
+    "indexName":          {"units": None,     "long_name": "Event name", "symbol": None},
+    "cauldronIndex":      {"units": None,     "long_name": "Event cauldron index", "symbol": None},
+    "t":                  {"units": "s",      "long_name": "Event time", "symbol": "t"},
+}
 
 # TRANSLATION NOTE: property validation is now handled via attrs.field(validator=...) below,
 # using the validator functions in utilities/validators.py (translated from IceCauldron.m's
@@ -114,6 +229,8 @@ class IceCauldron:
                               validator = attrs_validate_nonnegative)
     A: Number   = attrs.field(default   = 2.3e-24, # (TODO) Glen parameter
                               validator = attrs_validate_positive)
+    glen_n: Number = attrs.field(default = 3.0, # (-) Glen's flow law exponent
+                                 validator = attrs_validate_positive)
     E: Number   = attrs.field(default   = 5e9, # (Pa) Young's modulus of glacier ice. [0.9-10]e9 is a good range
                               validator = attrs_validate_nonnegative)
     nu: Number  = attrs.field(default   = 0.3, # Poisson's ratio for glacier ice. Values 0.3 to 0.4 are frequently used
@@ -160,27 +277,25 @@ class IceCauldron:
     # obj.openCauldron / obj.iceFreeCauldron - revisit once those are translated and the
     # solver-state design is worked out.
 
-    chi: Optional[float]        = attrs.field(init=False, default=None)  # (m3/kg) MAX volume ice meltable per kg magma
-    t_Qdecay: Optional[float]   = attrs.field(init=False, default=None)  # (s) Time at which eruption mass flux begins to decay
+    chi: float               = attrs.field(init=False)  # (m3/kg) MAX volume ice meltable per kg magma
+    t_Qdecay: float | None   = attrs.field(init=False, default=None)  # (s) Time at which eruption mass flux begins to decay
     # TRANSLATION NOTE: TODO t_Qdecay is declared but never assigned within IceCauldron.m's
     # constructor or its other methods - presumably set elsewhere (gvMain.m / glaciovolcano.m,
     # not yet translated). Left as None here; flagging rather than guessing at its assignment
     # logic.
-    tau_ND: Optional[float]      = attrs.field(init=False, default=None)  # (s) Non-dimensional time scale
-    V_ND: Optional[float]        = attrs.field(init=False, default=None)  # (m^3) Non-dimensional volume scale
-    L_ND: Optional[float]        = attrs.field(init=False, default=None)  # (m) Non-dimensional length scale
-    theta_i: Optional[float]     = attrs.field(init=False, default=None)  # (rad) Slope of outlet glacier ice surface
-    theta_b: Optional[float]     = attrs.field(init=False, default=None)  # (rad) Slope of outlet glacier bed surface
-    k_nikuradse: Optional[float] = attrs.field(init=False, default=None)  # (m) Nikuradse roughness height
-    E_prime: Optional[float]     = attrs.field(init=False, default=None, validator=allow_none(attrs_validate_nonnegative))  # Flexural parameter - Young's modulus adjusted with poisson's ratio
+    tau_ND: float             = attrs.field(init=False)  # (s) Non-dimensional time scale
+    V_ND: float               = attrs.field(init=False)  # (m^3) Non-dimensional volume scale
+    L_ND: float               = attrs.field(init=False)  # (m) Non-dimensional length scale
+    theta_i: float            = attrs.field(init=False)  # (rad) Slope of outlet glacier ice surface
+    theta_b: float            = attrs.field(init=False)  # (rad) Slope of outlet glacier bed surface
+    k_nikuradse: float        = attrs.field(init=False)  # (m) Nikuradse roughness height
+    E_prime: float            = attrs.field(init=False, validator=attrs_validate_nonnegative)  # Flexural parameter - Young's modulus adjusted with poisson's ratio
     # TRANSLATION NOTE: E_prime carries MATLAB's {mustBeNonnegative} validator, but unlike the
-    # input parameters above, it's computed (not user-supplied) and starts as None until
-    # __attrs_post_init__ assigns it - allow_none() lets it skip validation while unset, then
-    # validates normally once __attrs_post_init__ sets its real value (attrs.define validates on
-    # every subsequent assignment by default, not just at construction).
+    # input parameters above, it's computed (not user-supplied) - it has no default and is
+    # validated when __attrs_post_init__ assigns it (attrs.define validates on every assignment).
 
-    fastest_cauldron_index: Optional[int] = attrs.field(init=False, default=None)
-    slowest_cauldron_index: Optional[int] = attrs.field(init=False, default=None)
+    fastest_cauldron_index: int = attrs.field(init=False)
+    slowest_cauldron_index: int = attrs.field(init=False)
 
     # ---------------------------------------
     #    SIMULATION PARAMETERS AND SWITCHES
@@ -202,9 +317,10 @@ class IceCauldron:
     disable_plume_flux: bool = True
     terminal_condition: str = "default"  # "default", "t_final"
     plume_emulator_json: str = "hydroplume_emulator_2025-04-22.json"  # JSON containing random forest emulator parameters
-    plume_emulator: Optional[dict] = attrs.field(init=False, default=None)  # Structure array containing random forest parameters
+    plume_emulator: list[dict] | None = attrs.field(init=False, default=None)  # Structure array containing random forest parameters
 
     # units struct
+    VAR_INFO: ClassVar[dict] = ICE_CAULDRON_VAR_INFO  # defined above the class
 
     # ---- Hidden (bookkeeping) fields ----
     # TRANSLATION NOTE: these were MATLAB `properties (Hidden)` - per-instance properties with
@@ -239,18 +355,12 @@ class IceCauldron:
     # Helpers determined internally
     # (fastest_cauldron_index, slowest_cauldron_index are real per-instance fields, above)
 
-    params: Optional[xr.Dataset] = attrs.field(init=False, default=None)
+    params: xr.Dataset = attrs.field(init=False)
 
-    def __attrs_post_init__(self):
+    def __attrs_post_init__(self) -> None:
         """Initiate IceCauldron object."""
-        # TRANSLATION NOTE: MATLAB's constructor uses a generic reflective loop over all class
-        # properties to assign user-supplied opts, falling back to class defaults. Python's
-        # dataclass-generated __init__ already handles "user value or default" assignment for
-        # every field via normal keyword arguments - that portion of the MATLAB loop needs no
-        # Python equivalent. What follows is the per-cauldron broadcast/validation behavior
-        # from that same loop, applied explicitly per field, plus the secondary-constants
-        # calculations that followed it in the MATLAB source.
-        # (attrs equivalent of dataclasses' __post_init__ is __attrs_post_init__.)
+        # per-cauldron broadcast/validation behavior applied explicitly per field, plus the 
+        # secondary-constants calculations that followed it in the MATLAB source.
 
         # ---- Build per-cauldron parameter Dataset (user-supplied + computed secondary) ----
         cauldron = np.arange(self.n_cauldrons)
@@ -304,8 +414,17 @@ class IceCauldron:
         if not self.disable_plume_flux:
             self.plume_emulator = self.load_emulator()
 
+        # Metadata checks: every field needs a complete VAR_INFO entry; attach attrs to params
+        incomplete = [
+            f.name for f in attrs.fields(type(self))
+            if set(self.VAR_INFO.get(f.name, {})) != {"units", "long_name", "symbol"}
+        ]
+        if incomplete:
+            warnings.warn(f"Missing or incomplete IceCauldron.VAR_INFO entries for fields: {incomplete}", MissingVarInfoWarning)
+        self.add_var_attrs(self.params)
+
     def summary(self, verbose: bool = False) -> str:
-        """Human-readable summary of this IceCauldron's parameters, grouped into
+        """Human-readable summary of IceCauldron's parameters, grouped into
         scalar (non-per-cauldron) parameters, per-cauldron parameters, and -
         only if verbose=True - calculated/derived parameters that aren't
         constructor inputs (attrs fields with init=False).
@@ -325,8 +444,7 @@ class IceCauldron:
             lines.append(f"  {f.name} = {getattr(self, f.name)!r}")
 
         lines.append("\nPer-cauldron parameters:")
-        if self.params is not None:
-            lines.append("  " + str(self.params).replace("\n", "\n  "))
+        lines.append("  " + str(self.params).replace("\n", "\n  "))
         for name in ("open_cauldron", "ice_free_cauldron"):
             lines.append(f"  {name} = {getattr(self, name)!r}")
 
@@ -340,8 +458,38 @@ class IceCauldron:
     def __repr__(self) -> str:
         return self.summary(verbose=False)
 
+    def get_var_info(self, name: Hashable) -> dict | None:
+        """VAR_INFO metadata for one field/variable, with templated units (e.g. A's, which
+        depend on glen_n) resolved for this instance. None if the name has no entry."""
+        info = self.VAR_INFO.get(name)
+        if info is None:
+            return None
+        info = dict(info)
+        if info["units"] is not None:
+            info["units"] = info["units"].format(glen_n=self.glen_n)
+        return info
+
+    def add_var_attrs(self, ds: xr.Dataset) -> xr.Dataset:
+        """Attach VAR_INFO metadata (units, long_name, symbol) as attrs on every data variable
+        and coordinate of ds, warning (MissingVarInfoWarning) for any name without an entry.
+
+        This is the single place output units are assigned. It currently writes the physical
+        (dimensional) units from VAR_INFO - when non-dimensionalization is implemented, THIS is
+        the function to change (e.g. units="1" plus each variable's scale, per self.non_dimensionalized).
+        """
+        missing = []
+        for name in list(ds.data_vars) + list(ds.coords):
+            info = self.get_var_info(name)
+            if info is None:
+                missing.append(name)
+                continue
+            ds[name].attrs.update({key: value for key, value in info.items() if value is not None})
+        if missing:
+            warnings.warn(f"No IceCauldron.VAR_INFO entry for: {missing}", MissingVarInfoWarning)
+        return ds
+
     # TODO: build constants and units functions
-    def get_dimensional_scales(self):
+    def get_dimensional_scales(self) -> None:
         """Calculate main dimensional scales for equation non-dimensionalization.
         TODO: non-dimensionalization not yet implemented
         Current setup:
@@ -378,7 +526,7 @@ class IceCauldron:
         self.tau_ND = tau_melt[self.fastest_cauldron_index]
         self.L_ND = G_n[self.fastest_cauldron_index]
 
-    def load_emulator(self):
+    def load_emulator(self) -> list[dict]:
         print("Loading plume emulator json...")
         with open(self.plume_emulator_json) as f:
             emulator = json.load(f)
@@ -387,7 +535,7 @@ class IceCauldron:
     # ---------- FUNCTIONS USED IN INTEGRATION SOLVER ---------- #
     # These should return column vectors when nCauldrons > 1
     #  '-> watch when gv vector properties are called
-    def get_initial_conditions(self):
+    def get_initial_conditions(self) -> np.ndarray:
         """Build solver initial conditions for:
         a_n
         c_n
@@ -419,7 +567,7 @@ class IceCauldron:
         return ic
 
     # ----------------------- CAULDRON-BASED EVENTS -----------------------
-    def check_open_cauldron_conditions(self, c_n):
+    def check_open_cauldron_conditions(self, c_n: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         # Brief dummy condition - roof drops below X% thickness
         min_roof_fraction = 0.6
 
@@ -432,7 +580,7 @@ class IceCauldron:
 
         return event_val, is_term, direction
 
-    def check_ice_free_cauldron_conditions(self, V_ice_n, a_n):
+    def check_ice_free_cauldron_conditions(self, V_ice_n: np.ndarray, a_n: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         # Brief dummy condition - roof drops below 25% thickness
         event_val = V_ice_n / self.get_cv_control_volume(a_n) - 1e-5
         is_term = np.ones_like(V_ice_n)
@@ -447,13 +595,13 @@ class IceCauldron:
     # --> Basic geometry and some related equations will go here. Most
     # equations however will have their own functions in the @IceCauldron
     # methods directory
-    def get_cv_control_volume(self, a):
+    def get_cv_control_volume(self, a: ArrayLike) -> np.ndarray:
         """Get total volume (m3) of control volume."""
         a = np.asarray(a, dtype=float)
         # For cylindrical geometry:
         return (self.params["G_n"].values * self.params["L_n"].values) * 2 * a
 
-    def get_cv_ice_area(self):
+    def get_cv_ice_area(self) -> np.ndarray:
         """Get area of cauldron control volume (m2) vertical ICE surface
         for ice inflow and open cauldron melting.
         """
@@ -462,7 +610,7 @@ class IceCauldron:
 
     # -------------------- VENT/MELTING & ICE INFLOW -----------------------
     # Translated from @IceCauldron/get_u_ice.m, get_f_i.m, get_u_melt.m, get_da_dt.m
-    def get_u_ice(self):
+    def get_u_ice(self) -> tuple[np.ndarray, np.ndarray]:
         """[u_ice_0, u_ice_bar] = get_u_ice(obj)
         Estimate sliding+creep inflow velocity into cauldron.
           u_ice_bar = average inflow velocity across the CV boundary (m/s)
@@ -487,12 +635,20 @@ class IceCauldron:
             u_ice_bar = -max_strain_rate * self.params["G_n"].values * 2
             u_ice_0 = -u_ice_bar
         elif self.ice_inflow_mode == "off":
-            u_ice_0 = 0
-            u_ice_bar = 0
+            # TRANSLATION NOTE: MATLAB returns scalar 0s here; per-cauldron zeros are returned
+            # instead so both modes have the same (n_cauldrons,) output shape.
+            u_ice_0 = np.zeros(self.n_cauldrons)
+            u_ice_bar = np.zeros(self.n_cauldrons)
 
         return u_ice_0, u_ice_bar
 
-    def get_f_i(self, a=None, c=None, t=None, events=None):
+    def get_f_i(
+        self,
+        a: np.ndarray | None = None,
+        c: np.ndarray | None = None,
+        t: np.ndarray | None = None,
+        events: xr.Dataset | None = None,
+    ) -> np.ndarray:
         """f_i_n = get_f_i(obj,a,c,t,events)
         Calculate the geometry-dependent heat transfer efficiency for
         ice melting.
@@ -560,7 +716,14 @@ class IceCauldron:
 
         return f_i_n
 
-    def get_u_melt(self, a, c, f_i, open_idx=None, ice_free_idx=None):
+    def get_u_melt(
+        self,
+        a: np.ndarray,
+        c: np.ndarray,
+        f_i: np.ndarray,
+        open_idx: np.ndarray | None = None,
+        ice_free_idx: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """[u_melt, v_melt] = get_u_melt(obj,a,c,f_i,openIdx,iceFreeIdx)
         IN:
           obj    = IceCauldron
@@ -655,8 +818,10 @@ class IceCauldron:
         # ifc = or(and(iOpen,iIceFree),c>=obj.G_n');
         ifc = i_open & i_ice_free
         if np.any(ifc):
-            u_melt_if = (f_i * self.chi * self.params["Q_per_L"].values) * (1 / (2 * c))
-            u_melt[ifc] = u_melt_if[ifc]
+            # Evaluated on ice-free elements only, avoiding 1/(2*c) at c = 0 elsewhere in a time series
+            f_i_Q = np.broadcast_to(f_i * self.chi * self.params["Q_per_L"].values, a.shape)
+            u_melt_if = f_i_Q[ifc] * (1 / (2 * c[ifc]))
+            u_melt[ifc] = u_melt_if
             v_melt[ifc] = 0
 
         return u_melt, v_melt
@@ -672,7 +837,9 @@ class IceCauldron:
         #                 bar_u_melt = (f_i .* obj.chi .* obj.Q_per_L') ./ (obj.get_CV_ice_area + );
         #             end
 
-    def get_da_dt(self, a_n, c_n, f_i, u_ice_0):
+    def get_da_dt(
+        self, a_n: np.ndarray, c_n: np.ndarray, f_i: np.ndarray, u_ice_0: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """[da_dt, dc_dt] = get_da_dt(gv,a_n, c_n, f_i, u_ice_0)
         Get cauldron axes growth rates
         """
@@ -686,7 +853,15 @@ class IceCauldron:
 
         return da_dt, dc_dt
 
-    def get_material_heights(self, V_ice_n, V_w_n, V_p_n, V_cavity_n, a_n, c_n):
+    def get_material_heights(
+        self,
+        V_ice_n: np.ndarray,
+        V_w_n: np.ndarray,
+        V_p_n: np.ndarray,
+        V_cavity_n: np.ndarray,
+        a_n: np.ndarray,
+        c_n: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """[H_i_n, H_w_n, H_p_n, H_cum_n] = getMaterialHeights(obj,V_ice_n,V_w_n,V_p_n,V_cavity_n,a_n,c_n)
         Return height of the various material phases
         """
@@ -709,6 +884,7 @@ class IceCauldron:
         )
 
         n_steps = a_n.shape[0]
+        V_CV_n = self.get_cv_control_volume(a_n)
 
         H_i_n = np.zeros(a_n.shape)
         H_w_n = np.zeros(a_n.shape)
@@ -718,6 +894,22 @@ class IceCauldron:
             if not self.open_cauldron[nc]:
                 # Closed cauldron case - elliptical
                 for ti in range(n_steps):
+                    # No cavity (c_n or V_cavity_n = 0): zero fill heights, skipping the optimizers'
+                    # division by c_n and V_cavity_n.
+                    # Volumes within 1e-6 * V_CV_n of zero count as zero (e.g. solver Jacobian perturbations).
+                    vol_tol = 1e-6 * V_CV_n[ti, nc]
+                    if np.isclose(c_n[ti, nc], 0) or np.isclose(V_cavity_n[ti, nc], 0, atol=vol_tol):
+                        if not np.all(np.isclose([V_w_n[ti, nc], V_p_n[ti, nc], V_cavity_n[ti, nc]], 0, atol=vol_tol)):
+                            warnings.warn(
+                                f"get_material_heights: no cavity (c_n = {c_n[ti, nc]}) for cauldron {nc} (step {ti}) but "
+                                f"V_w_n = {V_w_n[ti, nc]}, V_p_n = {V_p_n[ti, nc]}, "
+                                f"V_cavity_n = {V_cavity_n[ti, nc]} (expected 0) - returning zero heights."
+                            )
+                        H_p_n[ti, nc] = 0
+                        H_w_n[ti, nc] = 0
+                        H_i_n[ti, nc] = self.params["G_n"].values[nc] - c_n[ti, nc]
+                        continue
+
                     # NOTE: fminbnd functions WILL prevent cumulative water and pyroclast
                     # heights greater than cavity height, c_n
 
@@ -727,7 +919,7 @@ class IceCauldron:
                     # tolerances differ slightly from MATLAB's fminbnd defaults - flagging per
                     # CLAUDE.md's ODE/solver translation notes since this is a MATLAB->SciPy
                     # optimizer substitution, not a like-for-like default).
-                    def height_fun(h, ti=ti, nc=nc):
+                    def height_fun(h: float, ti: int = ti, nc: int = nc) -> float:
                         return abs(
                             np.arcsin(h / c_n[ti, nc])
                             + h / c_n[ti, nc] * (1 - (h / c_n[ti, nc]) ** 2) ** (1 / 2)
@@ -737,7 +929,7 @@ class IceCauldron:
                     H_p_n[ti, nc] = minimize_scalar(height_fun, bounds=(0, c_n[ti, nc]), method="bounded").x
 
                     # Water depth
-                    def height_fun(h, ti=ti, nc=nc):
+                    def height_fun(h: float, ti: int = ti, nc: int = nc) -> float:
                         return abs(
                             np.arcsin(h / c_n[ti, nc])
                             + h / c_n[ti, nc] * (1 - (h / c_n[ti, nc]) ** 2) ** (1 / 2)
@@ -768,7 +960,7 @@ class IceCauldron:
 
     # ------------------------------- PLUME ---------------------------------
     # Translated from @IceCauldron/getPlumeFluxes.m
-    def get_plume_fluxes(self, Ze, Q, a, L):
+    def get_plume_fluxes(self, Ze: ArrayLike, Q: ArrayLike, a: ArrayLike, L: ArrayLike) -> tuple[np.ndarray, ...]:
         """[h_m, r_C, qw0, qwC, qs0, qsC] = getPlumeFluxes(obj, Ze, Q, a, L)
         Given matched vector of Ze, Q, return 6 plume flux/length values:
         Input:
@@ -848,7 +1040,9 @@ class IceCauldron:
 
     # --------------------------- SUPRAGLACIAL DRAINAGE -----------------------
     # Translated from @IceCauldron/get_q_s.m
-    def get_q_s(self, V_fluid_n, V_cavity_n, dV_fluid_n, dV_cavity_n):
+    def get_q_s(
+        self, V_fluid_n: np.ndarray, V_cavity_n: np.ndarray, dV_fluid_n: np.ndarray, dV_cavity_n: np.ndarray
+    ) -> np.ndarray:
         """q_s_n = get_q_s(obj,V_fluid_n, V_cavity_n, dV_fluid_n, dV_cavity_n)
         Get supra-glacial drainage term
         """
@@ -900,7 +1094,7 @@ class IceCauldron:
     # calculation - is not implemented in the MATLAB source at all (dummy zeros only), and
     # solve_delta_p only implements one regime, explicitly erroring otherwise. Bugs/incompleteness
     # here are preserved as-is per CLAUDE.md's in-development-components policy, not fixed.
-    def get_fluxural_rigidity(self, h):
+    def get_fluxural_rigidity(self, h: float | np.ndarray) -> float | np.ndarray:
         """D = getFluxuralRigidity(obj,h)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Get flexural rigidity of a beam of glacier ice with thickness h (m).
@@ -920,7 +1114,7 @@ class IceCauldron:
 
         return D
 
-    def get_l_lambda(self, x, smooth_transition=False):
+    def get_l_lambda(self, x: float | np.ndarray, smooth_transition: bool = False) -> tuple[float | np.ndarray, float | np.ndarray, float | np.ndarray]:
         """[l, l_hi_ratio, l_lambda] = get_L_lambda(obj,x,smoothTransition)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Estimate Pressure wave dimension as 1/4*(ice flexural wavelength), as a
@@ -1010,7 +1204,7 @@ class IceCauldron:
 
         return l, l_hi_ratio, l_lambda
 
-    def get_u_tip(self, dP, rho, h_i, l):
+    def get_u_tip(self, dP: float | np.ndarray, rho: float, h_i: float | np.ndarray, l: float | np.ndarray) -> float | np.ndarray:
         """U_tip = get_U_tip(obj,dP,rho,h_i,l)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         This function for crack tip velocity is from Tsai & Rice (2012) (Journal
@@ -1040,7 +1234,7 @@ class IceCauldron:
 
         return U_tip
 
-    def get_del_h(self, dP, h_i, l):
+    def get_del_h(self, dP: float | np.ndarray, h_i: float | np.ndarray, l: float | np.ndarray) -> float | np.ndarray:
         """del_h = get_del_h(obj,dP,h_i,l)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Get vertical ice deflection due to elastic pressure.
@@ -1069,7 +1263,7 @@ class IceCauldron:
 
         return del_h
 
-    def drainage_density(self):
+    def drainage_density(self) -> tuple[float, float, float, float]:
         """[rho_f,phi_w,phi_p,chi_f] = drainageDensity(obj)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Get density and mass fractions of draining fluid, depending on choice of
@@ -1147,7 +1341,9 @@ class IceCauldron:
 
         return rho_f, phi_w, phi_p, chi_f
 
-    def get_drainage_fluxes(self, phi_w, P_w, H_w_n, H_cum_n):
+    def get_drainage_fluxes(
+        self, phi_w: float, P_w: float, H_w_n: np.ndarray, H_cum_n: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """[q_d_n,q_c_n] = getDrainageFluxes(obj,phi_w,P_w,H_w_n,H_cum_n)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Calculate the three flood discharge terms
@@ -1162,7 +1358,9 @@ class IceCauldron:
 
         return q_d_n, q_c_n
 
-    def solve_delta_p(self, x, P_0, rho_f, u_prev=None, smooth_l_lambda=True):
+    def solve_delta_p(
+        self, x: float, P_0: float, rho_f: float, u_prev: float | None = None, smooth_l_lambda: bool = True
+    ) -> tuple[float, float, float | np.ndarray]:
         """[Delta_P,u_1,h_lambda] = solveDeltaP(obj,x,P_0,rho_f,u_prev,smooth_l_lambda)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Iterative solution to find a deltaP with frictional pressure loss that
@@ -1200,7 +1398,7 @@ class IceCauldron:
                 u_guess = u_prev
 
             # dP_max = Delta_P_from_Bernoulli_1(obj,0,P_0,rho_f,x,10); % The 10 needs a fix...
-            def dP_fun(u):
+            def dP_fun(u: float) -> float | np.ndarray:
                 return objective_delta_p_1(self, u, P_0, rho_f, x)
 
             # u_1 = fminbnd(dP_fun,0,u_max,opts);
@@ -1212,6 +1410,8 @@ class IceCauldron:
             u_1 = result.x[0]
 
             Delta_P = delta_p_from_u_tip(self, u_1, rho_f, x)
+            # TRANSLATION NOTE: 4 arguments passed to get_del_h(dP, h_i, l), which takes 3 - as in
+            # MATLAB (solveDeltaP.m:50, extra leading x). Preserved; raises TypeError if reached.
             h_lambda = self.get_del_h(x, Delta_P, h_i, l)
             # Delta_P_check = Delta_P_from_Bernoulli_1(obj,u_1,P_0,rho_f,x, del_h);
 
@@ -1243,7 +1443,7 @@ class IceCauldron:
         return Delta_P, u_1, h_lambda
 
     # ---- HELPER FUNCTIONS to get lists of solver-calculated variables ---
-    def get_solution_indices(self):
+    def get_solution_indices(self) -> tuple[dict[str, slice | int], int]:
         """Quick helper function to tell which indices in ode solver
         solutions y correspond to which variables, since number of
         cauldrons can vary.
@@ -1261,7 +1461,7 @@ class IceCauldron:
 
         n_vector_indices = self.n_cauldrons * n_vector_vars
 
-        indices = {}
+        indices: dict[str, slice | int] = {}
         for fi, name in enumerate(self.vector_solution_vars):
             start = fi * self.n_cauldrons
             indices[name] = slice(start, start + self.n_cauldrons)
@@ -1273,15 +1473,15 @@ class IceCauldron:
 
         return indices, n
 
-    def solution_vars(self):
+    def solution_vars(self) -> tuple[str, ...]:
         """Direct solver vars."""
         return self.vector_solution_vars + self.scalar_solution_vars
 
-    def derived_vars(self):
+    def derived_vars(self) -> tuple[str, ...]:
         """Secondary vars derived from solution."""
         return self.vector_derived_vars + self.scalar_derived_vars
 
-    def time_series_vars(self):
+    def time_series_vars(self) -> tuple[str, ...]:
         # Secondary vars derived from solution
         # TRANSLATION NOTE: this comment is carried over verbatim from the MATLAB source, but
         # appears to be a copy-paste of derived_vars' comment above it - this function actually
@@ -1289,16 +1489,16 @@ class IceCauldron:
         # ones. Flagging the apparent doc/comment mismatch rather than silently correcting it.
         return self.solution_vars() + self.derived_vars()
 
-    def vector_vars(self):
+    def vector_vars(self) -> tuple[str, ...]:
         """Per-cauldron variables."""
         return self.vector_solution_vars + self.vector_derived_vars
 
-    def scalar_vars(self):
+    def scalar_vars(self) -> tuple[str, ...]:
         """Single variables."""
         return self.scalar_solution_vars + self.scalar_derived_vars
 
     # ---------------------------------------------------------------------
-    def get_elevation_profiles(self, x):
+    def get_elevation_profiles(self, x: float | np.ndarray) -> tuple[float | np.ndarray, float | np.ndarray, float | np.ndarray, float | np.ndarray, float | np.ndarray]:
         """Return linear (average) elevation profiles and slope angles of triangular
         glacier surface and bedrock.
 
@@ -1330,7 +1530,7 @@ class IceCauldron:
         return h_i, z_i, z_b, theta_i, theta_b
 
     @staticmethod
-    def validate_vector_length(prop, n_cauldrons, func_name, var_name):
+    def validate_vector_length(prop: ArrayLike, n_cauldrons: int, func_name: str, var_name: str) -> None:
         """Quick function to validate vector property lengths."""
         # TRANSLATION NOTE: MATLAB's validateattributes also checked that prop was numeric or
         # logical, and required a [1 x n_cauldrons] row-vector shape specifically. Translated

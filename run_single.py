@@ -16,6 +16,7 @@ import time
 
 from gvpy.gv_main import gv_main
 from gvpy.ice_cauldron import IceCauldron
+from gvpy.plotting import plot_results
 
 # ---- Set up IceCauldron control params ----
 c = IceCauldron(
@@ -48,6 +49,7 @@ print(f"Elapsed time: {time.perf_counter() - tic:.2f} s")  # toc
 
 # ---- Results plot ----
 # TODO - model run dashboard plot
+plot_results(dat).show()  # opens in a browser; blocks until stopped (Ctrl-C)
 
 print(c2)
 

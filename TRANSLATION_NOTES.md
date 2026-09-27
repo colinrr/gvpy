@@ -7,7 +7,7 @@ them - see the source files for full context on each). Grouped by relevance:
 what changed or was dropped, what's a known bug or in-development gap, and
 what decisions are still ahead.
 
-Last updated: 2026-09-20
+Last updated: 2026-09-27
 
 ## Changed Functionality / Removed Components
 
@@ -46,16 +46,15 @@ intentional, flagged decisions).
   (figure/plot/`get(gca,...)` calls, plus a source typo referencing `hi`
   instead of `h_i`) - left as a flagged comment rather than ported to
   matplotlib, since this project's plotting utilities (`plot_tools/*.m`)
-  haven't been translated at all yet.
+  hadn't been translated at the time (still not ported; `gvpy/plotting.py`
+  now exists).
 - **Project structure**: `gvpy/plume.py` and `gvpy/subglacial.py` (and,
   once translated, `gvpy/supraglacial.py`) are top-level `gvpy/` modules, not
   `gvpy/utilities/<component>.py` - per explicit project direction that
-  major model components warrant their own top-level module. Plotting/output
-  metadata methods (e.g. `getVarLabels.m`) are a further exception to the
-  "`@IceCauldron` -> single `ice_cauldron.py`" rule: they belong with
-  plotting tooling (`gvpy/plotting.py`, not yet created), not as `IceCauldron`
-  methods. CLAUDE.md's Project Structure section has been updated to reflect
-  both.
+  major model components warrant their own top-level module. `getVarLabels.m`
+  was originally planned for `gvpy/plotting.py`; it now lives in
+  `IceCauldron.VAR_INFO` instead (see "Variable metadata" below). CLAUDE.md's
+  Project Structure / Data Structures sections still describe the older plan.
 - **Two unrelated pre-existing bugs fixed** (not translation decisions, just
   noting they were touched): `gvpy/__init__.py` imported a deleted
   `gvpy.config` module (removed); `ice_cauldron.py` imported `ThermoConstants`
@@ -121,6 +120,76 @@ intentional, flagged decisions).
   `refine + 1` points precede the event; Python negative indexing would silently
   wrap, so it raises `IndexError` explicitly. The step is also capped at the
   remaining span (SciPy raises if `first_step` exceeds it; `ode15s` just clips).
+- **`par` exposes more flux terms**: `Q_n`, `u_ice_bar`, `q_d_n`, `q_c_n` are
+  returned alongside MATLAB's `par` fields, so they reach `result.data` for the
+  dashboard flux panels.
+
+### Model methods changed this session (user-approved)
+
+- **`get_u_ice`, `"off"` mode**: returns per-cauldron zero arrays instead of
+  MATLAB's scalar `0`, so both modes have shape `(n_cauldrons,)`.
+- **`get_material_heights`, no-cavity case**: when `c_n` or `V_cavity_n` is ~0
+  (`np.isclose`; volumes use `atol = 1e-6 * V_CV_n`), `H_p_n`/`H_w_n` are 0 and
+  `H_i_n = G_n - c_n`, skipping the optimizers (MATLAB divides by zero). A
+  `UserWarning` fires if `V_w_n`/`V_p_n`/`V_cavity_n` are non-zero beyond that
+  tolerance. All warnings seen before came from the BDF solver's
+  finite-difference Jacobian nudging states at the initial `c_n = 0`.
+- **`get_u_melt`, ice-free branch**: `1/(2c)` is evaluated only on ice-free
+  elements (results identical; avoids a divide-by-zero warning when the full
+  time series includes `c_n = 0` rows).
+- **Computed fields non-optional**: `init=False` fields always set in
+  `__attrs_post_init__` (`params`, `chi`, `tau_ND`, `V_ND`, `L_ND`, `theta_i`,
+  `theta_b`, `k_nikuradse`, `E_prime`, fastest/slowest indices) have no default
+  and no `None` in their type. `E_prime` validates directly (the `allow_none`
+  wrapper was removed). `t_Qdecay` (never assigned) and `plume_emulator` (only
+  loaded when plume fluxes are on) stay optional.
+- **New field `glen_n`** (Glen's flow-law exponent, default 3), paired with `A`.
+- **Type hints** on every function in `gvpy/`. Two existing hints were wrong and
+  were corrected: `get_elliptical_cylinder_sa(a, c)` takes arrays, and
+  `plume_emulator` is `list[dict]` (the emulator exporter writes a list of trees).
+
+### `S_spheroid.m` -> `utilities/geometry.py::s_spheroid` (user-approved corrections)
+
+- Scalar `a` and scalar `c` with x/z outputs errored in MATLAB (`a_vec` never
+  assigned); scalars are now length-1 vectors. `plotCauldronGeometry` hits this
+  whenever one snapshot falls in the closed phase.
+- MATLAB's `if c == 0` / `elseif a > c` on vectors only branch when ALL
+  elements match, so mixed vectors silently used the wrong formula (e.g. 16%
+  high); cases are now chosen element-wise.
+- `min/max([a c],[],2)` collapsed to a global min/max for row vectors;
+  element-wise in Python.
+- `a == c` (sphere) gave NaN (zero eccentricity); now `4*pi*a^2`.
+- `halved=True` default returns the hemispheroid area. MATLAB returned the full
+  spheroid area except in its `c == 0` branch (`pi*a^2`, the hemispheroid
+  value), so the default now matches that branch consistently.
+- Returns `(S, P)`, plus `x, z` with `return_xz=True` (MATLAB's nargout).
+
+### Variable metadata and plotting (`IceCauldron.VAR_INFO`, `plotting.py`)
+
+- **`getVarLabels.m` -> `IceCauldron.VAR_INFO`**: one registry (units,
+  `long_name`, `symbol`) for fields, computed `params`, solver outputs and event
+  variables, attached as xarray attrs by `add_var_attrs`. Output labels/symbols
+  are from `getVarLabels.m`, except user corrections `a_n` -> "Cavity
+  1/2-width" and `c_n` -> "Cavity height" (MATLAB called both "Cavity radius").
+  `getVarLabels.m`'s plotting scales are not in the registry - display
+  conversions live in `plotting.py`'s `DISPLAY_UNITS`, keyed by unit.
+- **Units not stated in the source**, derived from the equations (worth a
+  review): `V_t_max` (m^3), `E_prime` (Pa), `t_final` (s), `Q_per_L` (kg/s/m),
+  `melt_vol_per_s` (m^3/s), `V_melt`, `tau_melt`, `H_*_n` (m), `V_CV_n`,
+  `V_w_plus_p` (MATLAB listed no units), `dV_*_dt` and `q_*_n` (m^3/s), `phi_*`
+  (dimensionless). Most field symbols are new choices. `dV_cavity_dt` is
+  labelled "Ice melt volume rate" because it holds `dV_i_melt_dt` (the naming
+  oddity on the PROGRESS Todo list). `A`'s units are the template
+  `Pa^(-{glen_n}) s^-1`, resolved per instance by `get_var_info`.
+- **Plotting translation choices**: `cubehelix.m` is not ported (the three event
+  colours are computed once and hard-coded); `rgba2rgb.m` is not in the repo, so
+  it is implemented as alpha blending over white; MATLAB linked the volume
+  panels' x separately from the other time panels, here all time axes are
+  linked; legends label cauldrons 0-based; the geometry panel shows the first
+  run's cauldron 0 only; a cauldron that never opens / goes ice-free is treated
+  as "never" (MATLAB errored). "Cumulative Discharge" is computed in
+  `plotting.py` (time integral of `q_s_n + q_d_n + q_c_n`) - display-only, not
+  model output.
 
 ## Known Bugs and In-Development Issues
 
@@ -169,13 +238,19 @@ visibility since some of these make entire code paths currently unusable.
   and a cauldron opens before it can go ice-free.
 - **`get_material_heights` in the RHS**: its results only feed
   `get_drainage_fluxes` (dummy zeros), yet it runs two `minimize_scalar` calls
-  per cauldron per RHS call (removable overhead, MATLAB does the same). At the
-  initial state (`c_n = 0`, `V_cavity = 0`) it also divides by zero and emits
-  `RuntimeWarning`s, and its `assert H_w >= 0` could in principle trip on
-  optimizer tolerance (SciPy vs `fminbnd`) - not seen so far.
-- **Only one `gv_main` configuration has been run so far** (single cauldron,
-  `G_n=400`, no ice inflow, no supraglacial drainage). Multi-cauldron and
-  supraglacial-overflow runs are untested.
+  per cauldron per RHS call (removable overhead, MATLAB does the same). Its
+  `assert H_w >= 0` could in principle trip on optimizer tolerance (SciPy vs
+  `fminbnd`) - not seen so far. (The divide-by-zero warnings at the initial
+  `c_n = 0` state are resolved - see above.)
+- **`gv_main` configurations run**: 1 and 2 cauldrons, supraglacial `off` and
+  `overflow`, ice inflow `off` and `fixed-glen` all complete without warnings,
+  but no test yet checks their physics outputs.
+- **`solve_delta_p` passes 4 arguments to `get_del_h(dP, h_i, l)`** (3
+  expected) - as in MATLAB (`solveDeltaP.m:50`, extra leading `x`). Preserved
+  with a `TRANSLATION NOTE`; raises `TypeError` if reached.
+- **mypy**: 81 errors remain, all in existing code (the preserved
+  `faafo`/undefined-name placeholders, `gv_main` rebinding lists to arrays,
+  numpy/xarray types mypy can't narrow). mypy is not part of the workflow.
 - **`t_Qdecay`** is declared as an `IceCauldron` property in MATLAB but never
   assigned anywhere in the source - left as `None` in Python, not guessed at.
 - **Plume emulator JSON is intentionally absent.** The default
@@ -203,16 +278,19 @@ expect needing a call on in upcoming translation/development work.
   the same physics and use cases as the MATLAB benchmarks (basic cauldron
   growth, multi-cauldron, supraglacial drainage, drainage density) without their
   RMSE thresholds - to be worked out together.
-- **Results dashboard plot** (the `TODO` in `run_single.py`), together with
-  `getVarLabels.m` / a future `gvpy/plotting.py`.
+- **Dashboard follow-ups**: saving/loading `GVResult` (`to_netcdf` keeps the
+  `VAR_INFO` attrs), run/cauldron selectors for the geometry panel, tabs /
+  alternate views, and moving the flux-panel placeholders to real outputs as
+  the plume and drainage physics land.
+- **Non-dimensionalization**: `VAR_INFO` holds physical units only. When it is
+  implemented, `add_var_attrs` is the one function to change, and each variable
+  will likely need an explicit `nd_scale` key (`V_ND` is not `L_ND^3`, so scales
+  can't be derived from base dimensions). A later move to pint is possible,
+  since unit strings are pint-parseable (`A`'s once its `glen_n` template is resolved).
+- **`ThermoConstants` metadata** could adopt the same `VAR_INFO` pattern.
 - **`NonNegative` handling**: not replicated; whether any state can go
   negative in practice (and if so, clipping in the RHS vs. leaving it to events)
   is open.
-- **`getVarLabels.m`**: per project direction, this is plotting tooling, not
-  model physics/state - it belongs with plotting output (a `gvpy/plotting.py`
-  module, not yet created), not as an `IceCauldron` method. Whether its
-  content should further fold into `xarray` variable `attrs` (per CLAUDE.md's
-  flagged architecture question) is still open.
 - **`open_cauldron`/`ice_free_cauldron` migrating out of `IceCauldron`**
   into a separate mutable solver-state structure (already flagged inline in
   `ice_cauldron.py`) - now unblocked, since `gv_main` exists: it currently

@@ -5,10 +5,14 @@ Translated from MATLAB source: utilities/getEventsTable.m and
 utilities/assignIntegratedValues.m
 """
 
-from typing import Optional
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:  # annotation only - avoids a circular import
+    from ..ice_cauldron import IceCauldron
 
 
 def get_events_table(n_cauldrons: int) -> tuple[pd.DataFrame, list[str]]:
@@ -41,7 +45,7 @@ def get_events_table(n_cauldrons: int) -> tuple[pd.DataFrame, list[str]]:
     return index_table, per_cauldron_events + single_events
 
 
-def assign_integrated_values(y: np.ndarray, gv, dat: Optional[dict] = None) -> dict:
+def assign_integrated_values(y: np.ndarray, gv: "IceCauldron", dat: dict | None = None) -> dict:
     """dat = assignIntegratedValues(y,gv,solutions,dat)
     Get integrated value variables from ode y output. Generalized format to
     allow flexible development and addition of new variables.
