@@ -16,8 +16,10 @@ display the returned object; from a script, call `.show()` on it.
 """
 
 from collections.abc import Mapping, Sequence
+import re
 import warnings
 
+from bokeh.models import Label, Node
 import holoviews as hv
 from matplotlib.colors import to_hex
 import numpy as np
@@ -30,6 +32,7 @@ from .utilities.geometry import s_spheroid
 from .utilities.solver_helpers import get_events_table
 
 hv.extension("bokeh", logo=False)
+pn.extension("mathjax")  # TeX axis labels (Panel doesn't detect them inside HoloViews panes)
 
 Results = GVResult | Sequence[GVResult] | Mapping[str, GVResult]
 
@@ -99,8 +102,52 @@ def _axis_label(long_names: Sequence[str], display_unit: str | None) -> str:
     return f"{label} ({display_unit})" if display_unit else label
 
 
+# Greek letter names as written in VAR_INFO symbols (e.g. "phi_w") -> Unicode, for legends
+GREEK = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "theta": "θ", "lambda": "λ",
+    "mu": "μ", "nu": "ν", "rho": "ρ", "sigma": "σ", "tau": "τ", "phi": "φ", "chi": "χ", "psi": "ψ", "omega": "ω",
+}
+GREEK_RE = re.compile(r"(?<![A-Za-z])(" + "|".join(GREEK) + r")(?![a-z])")
+
+
+def _tex_symbol(symbol: str) -> str:
+    """VAR_INFO symbol -> TeX: Greek names to commands, multi-letter subscripts upright."""
+    tex = GREEK_RE.sub(r"\\\1", symbol)
+    return re.sub(r"_\{?([A-Za-z]{2,})\}?", r"_{\\mathrm{\1}}", tex)
+
+
+def _tex_units(unit: str) -> str:
+    """Units string (e.g. "m^3/s", "Pa^(-3) s^-1") -> upright TeX."""
+    if unit == "-":
+        return r"\text{-}"
+    tex = re.sub(r"\^\(?([-+]?[\d./]+)\)?", r"^{\1}", unit).replace("*", r"\cdot ").replace(" ", r"\,")
+    return rf"\mathrm{{{tex}}}"
+
+
+def _tex_axis_label(name: str, display_unit: str | None, symbol: str | None = None, wrap: bool = True) -> str:
+    """Axis label typeset by MathJax: name, then symbol (if given) and units - on a 2nd line if wrap.
+
+    With wrap, names over 22 characters are also split (at the space nearest the middle) to fit short panels.
+    """
+    name = re.sub(r"([&%$#_{}])", r"\\\1", name)
+    if wrap and len(name) > 22 and " " in name:
+        split = min((i for i, ch in enumerate(name) if ch == " "), key=lambda i: abs(i - len(name) / 2))
+        line1 = r"\text{" + name[:split] + r"}\\ \text{" + name[split + 1 :] + "}"
+    else:
+        line1 = r"\text{" + name + "}"
+    line2 = ([_tex_symbol(symbol)] if symbol else []) + ([rf"({_tex_units(display_unit)})"] if display_unit else [])
+    line2 = r"\;".join(line2)
+    if not line2:
+        return f"$${line1}$$"
+    if wrap:
+        return rf"$$\begin{{array}}{{c}}{line1}\\ {line2}\end{{array}}$$"
+    return rf"$${line1}\;{line2}$$"
+
+
 def _legend_text(da: xr.DataArray) -> str:
-    return (da.attrs.get("symbol") or str(da.name)).replace("{", "").replace("}", "")
+    # Bokeh legends can't render TeX, so Greek names become Unicode characters instead
+    symbol = (da.attrs.get("symbol") or str(da.name)).replace("{", "").replace("}", "")
+    return GREEK_RE.sub(lambda m: GREEK[m.group(1)], symbol)
 
 
 def _plot_data(result: GVResult) -> xr.Dataset:
@@ -119,14 +166,15 @@ def _plot_data(result: GVResult) -> xr.Dataset:
 def plot_time_series(
     results: Results,
     var: str | Sequence[str],
-    y_dim: hv.Dimension | None = None,
+    y_label: str | None = None,
     display_units: Mapping | None = None,
 ) -> hv.Overlay:
     """Plot time series with events for output variable(s).
 
     One line per (run, cauldron, variable), plus event markers coloured by event type.
     var           = variable name, or list of names to share one axis
-    y_dim         = optional shared y Dimension - plots with the same y Dimension name link y axes
+    y_label       = optional y-axis name replacing the variables' long names - plots with the same
+                    y_label link y axes
     display_units = optional overrides/additions to DISPLAY_UNITS
     """
     # TRANSLATION NOTE: cauldron labels in legends are 0-based (the Python `cauldron` coordinate);
@@ -135,10 +183,13 @@ def plot_time_series(
     display_units = {**DISPLAY_UNITS, **(display_units or {})}
     runs = _as_labelled_results(results)
     variables = [var] if isinstance(var, str) else list(var)
-    if y_dim is None:
-        data0 = _plot_data(next(iter(runs.values())))
-        parts = [_display(data0[v], display_units) for v in variables]
-        y_dim = hv.Dimension("+".join(variables), label=_axis_label([p[1] for p in parts], parts[0][2]))
+    data0 = _plot_data(next(iter(runs.values())))
+    parts = [_display(data0[v], display_units) for v in variables]
+    y_name = y_label or ", ".join(p[1] for p in parts)
+    y_dim = hv.Dimension(y_label or "+".join(variables), label=_axis_label([y_name], parts[0][2]))
+    # TeX axis label: symbol shown only for a single variable
+    symbol = data0[variables[0]].attrs.get("symbol") if len(variables) == 1 else None
+    tex_ylabel = _tex_axis_label(y_name, parts[0][2], symbol)
 
     curves = []
     ev_t, ev_y, ev_name, ev_cauldron, ev_run = [], [], [], [], []
@@ -187,7 +238,11 @@ def plot_time_series(
     ).opts(color="event", cmap=EVENT_COLORS, size=8, line_color="black", tools=["hover"], show_legend=False)
 
     return hv.Overlay(curves + [markers]).opts(
-        legend_position="top_left", legend_opts={"click_policy": "hide", "label_text_font_size": "8pt"}
+        xlabel=_tex_axis_label(t_name, t_unit, wrap=False),
+        ylabel=tex_ylabel,
+        legend_position="top_right",
+        # Background alpha 0.75 (Bokeh default 0.95) so covered data shows through
+        legend_opts={"click_policy": "hide", "label_text_font_size": "8pt", "background_fill_alpha": 0.75},
     )
 
 
@@ -291,6 +346,8 @@ def plot_cauldron_geometry(
         for xy, label, color in zip(outlines, labels, cmap)
     ]
     return hv.Overlay(h).opts(
+        xlabel=_tex_axis_label("Radial distance", "m", wrap=False),
+        ylabel=_tex_axis_label("Elevation", "m"),
         data_aspect=1,
         ylim=(-0.05 * G + z_b, 1.05 * G + z_b),
         show_grid=True,
@@ -310,7 +367,7 @@ NAMES_LEFT = [
     "Sheet Volume",
     "Cumulative Discharge",
     "Cauldron Dimensions",
-    "Cauldron Geometry",
+    "Material Heights",
     "Melting Rates",
     "Heating Efficiency",
 ]
@@ -332,6 +389,7 @@ PANEL_VARS = {
     "Cumulative Discharge": ["V_discharge_cum"],
     "Cauldron Dimensions": ["a_n", "c_n"],
     "Cauldron Geometry": "geometry",
+    "Material Heights": ["H_i_n", "H_w_n", "H_p_n", "H_cum_n"],
     "Melting Rates": ["horizontalMeltingRate_n", "verticalMeltingRate_n"],
     "Heating Efficiency": ["f_i_n"],
     "Conduit Flux": ["Q_n"],
@@ -348,20 +406,64 @@ PANEL_VARS = {
 # (two linkaxes calls); here all time axes are linked together.
 LINK_GROUP_XY = NAMES_LEFT[0:4]
 
+# Y-axis names replacing the variables' long names (shared names link y axes)
+PANEL_Y_LABELS = {**{name: "Volume" for name in LINK_GROUP_XY}, "Material Heights": "Material height"}
+
+# Panels without model output yet: blank axes with these y labels, as (long name, model units)
+PLACEHOLDER_AXES = {"Sheet Volume": ("Volume", "m^3"), "Plume Flux": ("Plume flux", "kg/s")}
+
 # Formatting Groups (Which axes should have X-labels hidden?)
 HIDE_X_LABELS = [NAMES_LEFT[i] for i in (0, 2, 4, 6)] + NAMES_RIGHT[:-1]
+
+# Geometry tab: geometry panel on the left half, these stacked on the right half
+NAMES_GEOMETRY_TAB = ["Cauldron Dimensions", "Material Heights"]
 
 
 def _placeholder(name: str, reason: str) -> pn.pane.Markdown:
     return pn.pane.Markdown(f"**{name}**\n\n*{reason}*", styles={"border": "1px solid #ccc"})
 
 
+def _inner_title(name: str):
+    """Hook drawing the panel title inside the axes frame (top-left), so stacked panels can sit flush."""
+
+    def hook(plot, element):
+        fig = plot.state
+        fig.add_layout(
+            Label(
+                x=Node(target="frame", symbol="left", offset=6),
+                y=Node(target="frame", symbol="top", offset=4),
+                anchor="top_left",
+                text=name,
+                text_font_size="11pt",
+                text_font_style="bold",
+                background_fill_color="white",
+                background_fill_alpha=0.7,
+            )
+        )
+        fig.min_border_top = 5
+        fig.min_border_bottom = 5
+
+    return hook
+
+
 def _panel(name: str, runs: dict, hide_x: bool, display_units: Mapping) -> pn.viewable.Viewable:
     """One named dashboard panel."""
     panel_vars = PANEL_VARS[name]
+    title = name
     if panel_vars is None:
-        return _placeholder(name, "not yet output by model")
-    if panel_vars == "geometry":
+        # Blank axes, with the time and y dimensions the panel will have (so they link)
+        y_name, units = PLACEHOLDER_AXES[name]
+        y_unit = display_units[units][0]
+        t_scale, t_name, t_unit = _display(next(iter(runs.values())).data["time"], display_units)
+        t_dim = hv.Dimension("time", label=_axis_label([t_name], t_unit))
+        y_dim = hv.Dimension(PANEL_Y_LABELS.get(name, y_name), label=_axis_label([y_name], y_unit))
+        # NaN data spanning the runs' time range, so the linked time axes keep their extent
+        t = np.concatenate([r.data["time"].values for r in runs.values()]) * t_scale
+        plot = hv.Curve(([t.min(), t.max()], [np.nan, np.nan]), t_dim, y_dim).opts(
+            xlabel=_tex_axis_label(t_name, t_unit, wrap=False), ylabel=_tex_axis_label(y_name, y_unit)
+        )
+        title = f"{name} - NOT YET IMPLEMENTED"
+    elif panel_vars == "geometry":
         # TRANSLATION NOTE: geometry is drawn for the first run and cauldron 0 only
         plot = plot_cauldron_geometry(next(iter(runs.values())), display_units=display_units)
     else:
@@ -369,14 +471,12 @@ def _panel(name: str, runs: dict, hide_x: bool, display_units: Mapping) -> pn.vi
         if missing:
             warnings.warn(f"Panel '{name}': variables {sorted(set(missing))} not in results - showing placeholder.")
             return _placeholder(name, f"missing from results: {', '.join(sorted(set(missing)))}")
-        y_dim = None
-        if name in LINK_GROUP_XY:
-            display_unit = _display(_plot_data(next(iter(runs.values())))[panel_vars[0]], display_units)[2]
-            y_dim = hv.Dimension("volume", label=_axis_label(["Volume"], display_unit))
-        plot = plot_time_series(runs, panel_vars, y_dim=y_dim, display_units=display_units)
-        if hide_x:
-            plot = plot.opts(xaxis="bare")
-    return pn.pane.HoloViews(plot.opts(title=name, responsive=True, show_grid=True), sizing_mode="stretch_both")
+        plot = plot_time_series(runs, panel_vars, y_label=PANEL_Y_LABELS.get(name), display_units=display_units)
+    if hide_x:
+        plot = plot.opts(xaxis="bare")
+    plot = plot.opts(responsive=True, show_grid=True, hooks=[_inner_title(title)])
+    # Wide side margins leave room to scroll the page between columns without zooming an axis
+    return pn.pane.HoloViews(plot, sizing_mode="stretch_both", margin=(5, 30))
 
 
 def plot_results(
@@ -389,7 +489,7 @@ def plot_results(
     """Results dashboard for one or more model runs.
 
     panels        = None for the full layout (from plot_layout.m: a 2x2 grid of stacked panel
-                    pairs, beside a column of 6 flux panels), or a list of panel names (see
+                    pairs, beside a column of 6 flux panels; plus a Geometry tab), or a list of panel names (see
                     PANEL_VARS) to show only those, in order, in an ncols-wide grid.
     display_units = optional overrides/additions to DISPLAY_UNITS, e.g. {"s": ("min", 1/60)}
     Returns a Panel layout - display it in a notebook, or call .show() from a script.
@@ -399,7 +499,7 @@ def plot_results(
     event_legend = pn.pane.HTML(
         "<b>Events:</b> "
         + " ".join(
-            f"<span style='color:{c}; -webkit-text-stroke: 0.5px black'>&#9679;</span> {n}"
+            f"<span style='color:{c}; font-size:150%; -webkit-text-stroke: 0.5px black'>&#9679;</span> {n}"
             for n, c in EVENT_COLORS.items()
         )
     )
@@ -422,4 +522,12 @@ def plot_results(
     for i, name in enumerate(NAMES_RIGHT):
         grid[2 * i : 2 * i + 2, 2] = _panel(name, runs, name in HIDE_X_LABELS, display_units)
 
-    return pn.Column(event_legend, grid, sizing_mode="stretch_width")
+    # Geometry tab: geometry panel on the left (65% width), the other panels stacked on the right
+    geometry_grid = pn.GridSpec(sizing_mode="stretch_width", height=height // 2)
+    geometry_grid[0:2, 0:13] = _panel("Cauldron Geometry", runs, False, display_units)
+    for i, name in enumerate(NAMES_GEOMETRY_TAB):
+        hide_x = i < len(NAMES_GEOMETRY_TAB) - 1
+        geometry_grid[i, 13:20] = _panel(name, runs, hide_x, display_units)
+
+    tabs = pn.Tabs(("Overview", grid), ("Geometry", geometry_grid), sizing_mode="stretch_width")
+    return pn.Column(event_legend, tabs, sizing_mode="stretch_width")

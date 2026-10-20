@@ -1,7 +1,7 @@
 import warnings
 
 import attrs
-from bokeh.models import Plot
+from bokeh.models import Label, Plot
 import holoviews as hv
 import panel as pn
 import pytest
@@ -35,12 +35,13 @@ def test_full_layout_renders_linked_without_warnings(which, r1, r2):
         warnings.simplefilter("error")
         layout = plot_results(results)
         plots = _plots(layout)
-    assert len(plots) == 12  # 14 panels minus 2 placeholders
+    assert len(plots) == 17  # overview: 14 time panels; geometry tab: geometry, dimensions, material heights
     x_groups = sorted([sum(p.x_range is q.x_range for q in plots) for p in plots], reverse=True)
     y_groups = sorted([sum(p.y_range is q.y_range for q in plots) for p in plots], reverse=True)
-    assert x_groups[:11] == [11] * 11 and x_groups[11] == 1  # all time panels linked; geometry separate
-    assert y_groups[:3] == [3] * 3  # the three plotted volume panels share y
-    assert "Sheet Volume" in _markdown_text(layout) and "Plume Flux" in _markdown_text(layout)
+    assert x_groups[:16] == [16] * 16 and x_groups[16] == 1  # all time panels linked (across tabs); geometry separate
+    assert y_groups[:4] == [4] * 4  # the four volume panels (incl. the blank Sheet Volume) share y
+    titles = [label.text for label in layout.get_root().select({"type": Label})]
+    assert "Sheet Volume - NOT YET IMPLEMENTED" in titles and "Plume Flux - NOT YET IMPLEMENTED" in titles
 
 
 def test_panel_subset(r1):
