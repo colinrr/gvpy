@@ -1,5 +1,5 @@
 """Plume inflow/outflow model component: standalone functions supporting
-IceCauldron.get_plume_fluxes.
+IceCauldron.get_plume_flows.
 
 Translated from MATLAB source: @IceCauldron/getPlumeFluxes.m's embedded local
 functions (predictForest, predictTree) - the same implementation also exists,

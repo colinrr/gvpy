@@ -4,18 +4,18 @@ from gvpy.ice_cauldron import IceCauldron
 from gvpy.plume import predict_forest, predict_tree
 
 
-class TestGetPlumeFluxes:
-    """get_plume_fluxes, translated from @IceCauldron/getPlumeFluxes.m.
+class TestGetPlumeFlows:
+    """get_plume_flows, translated from @IceCauldron/getPlumeFluxes.m.
 
-    Only the disable_plume_flux (default) path is exercised here - the
+    Only the plume_flow_mode "off" (default) path is exercised here - the
     random-forest emulator path is an in-development/test mode that can't be
     run end-to-end without the (missing) emulator JSON file.
     """
 
-    def test_disabled_plume_flux_returns_zeros(self):
+    def test_disabled_plume_flow_returns_zeros(self):
         c = IceCauldron()
-        assert c.disable_plume_flux is True
-        h_m, r_c, qw0, qwc, qs0, qsc = c.get_plume_fluxes(Ze=10.0, Q=5e7, a=5.0, L=1000.0)
+        assert c.plume_flow_mode == "off"
+        h_m, r_c, qw0, qwc, qs0, qsc = c.get_plume_flows(Ze=10.0, Q=5e7, a=5.0, L=1000.0)
         assert (h_m, r_c, qw0, qwc, qs0, qsc) == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 

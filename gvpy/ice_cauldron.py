@@ -17,16 +17,16 @@ outputs) is already visible in the `def` line itself. Descriptive text beyond
 the signature echo is preserved.
 """
 
-import json
-import warnings
 from collections.abc import Hashable, Sequence
+import json
 from typing import ClassVar
+import warnings
 
 import attrs
 import numpy as np
-import xarray as xr
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize, minimize_scalar
+import xarray as xr
 
 from .plume import predict_forest
 
@@ -40,7 +40,9 @@ from .subglacial import (
 )
 from .utilities.constants import ThermoConstants
 from .utilities.geometry import get_elliptical_cylinder_sa
-from .utilities.math_helpers import smooth_union  # used by get_l_lambda (subglacial drainage, in development)
+from .utilities.math_helpers import (
+    smooth_union,  # used by get_l_lambda (subglacial drainage, in development)
+)
 from .utilities.melting import get_elliptic_heat_intensity
 from .utilities.validators import (
     attrs_range_inclusive,
@@ -82,9 +84,9 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "glen_n":             {"units": "1",      "long_name": "Glen's flow law exponent", "symbol": "n"},
     "E":                  {"units": "Pa",     "long_name": "Young's modulus of glacier ice", "symbol": "E"},
     "nu":                 {"units": "1",      "long_name": "Poisson's ratio for glacier ice", "symbol": "nu"},
-    # ---- Fields: magma flux & heat transfer ----
+    # ---- Fields: magma flow & heat transfer ----
     "V_t_max":            {"units": "m^3",    "long_name": "Estimated total airborne tephra volume", "symbol": "V_t_max"},
-    "Q_decay_frac":       {"units": "1",      "long_name": "Airborne tephra fraction at which plume flux decay is forced", "symbol": None},
+    "Q_decay_frac":       {"units": "1",      "long_name": "Airborne tephra fraction at which plume flow decay is forced", "symbol": None},
     "Q_0":                {"units": "kg/s",   "long_name": "Total magma discharge rate", "symbol": "Q_0"},
     "alpha":              {"units": "1",      "long_name": "Vertical/radial ratio of heat transfer rate", "symbol": "alpha"},
     "f_i":                {"units": "1",      "long_name": "Parameterized heat transfer efficiency: magma->ice", "symbol": "f_i"},
@@ -99,7 +101,7 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "open_cauldron":      {"units": None,     "long_name": "Cauldron roof open", "symbol": None},
     "ice_free_cauldron":  {"units": None,     "long_name": "Initial ice mass completely melted", "symbol": None},
     "chi":                {"units": "m^3/kg", "long_name": "Max volume of ice meltable per kg magma", "symbol": "chi"},
-    "t_Qdecay":           {"units": "s",      "long_name": "Time at which eruption mass flux begins to decay", "symbol": "t_Qdecay"},
+    "t_Qdecay":           {"units": "s",      "long_name": "Time at which eruption mass flow begins to decay", "symbol": "t_Qdecay"},
     "tau_ND":             {"units": "s",      "long_name": "Non-dimensional time scale", "symbol": "tau_ND"},
     "V_ND":               {"units": "m^3",    "long_name": "Non-dimensional volume scale", "symbol": "V_ND"},
     "L_ND":               {"units": "m",      "long_name": "Non-dimensional length scale", "symbol": "L_ND"},
@@ -116,7 +118,7 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "flood_density_model": {"units": None,    "long_name": "Flood fluid density model", "symbol": None},
     "ice_inflow_mode":    {"units": None,     "long_name": "Ice inflow mode", "symbol": None},
     "supraglacial_drainage_mode": {"units": None, "long_name": "Supraglacial drainage mode", "symbol": None},
-    "disable_plume_flux": {"units": None,     "long_name": "Plume fluxes disabled", "symbol": None},
+    "plume_flow_mode":    {"units": None,     "long_name": "Plume flows run mode", "symbol": None},
     "terminal_condition": {"units": None,     "long_name": "Terminal condition", "symbol": None},
     "plume_emulator_json": {"units": None,    "long_name": "Plume emulator JSON file", "symbol": None},
     "plume_emulator":     {"units": None,     "long_name": "Plume emulator random forest parameters", "symbol": None},
@@ -152,9 +154,9 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "dV_p_dt":            {"units": "m^3/s",  "long_name": "Cavity pyroclast volume rate", "symbol": "dV_p/dt"},
     "dV_ice_dt":          {"units": "m^3/s",  "long_name": "CV ice volume rate", "symbol": "dV_{ice}/dt"},
     "dV_cavity_dt":       {"units": "m^3/s",  "long_name": "Ice melt volume rate", "symbol": "dV_{i,melt}/dt"},  # holds dV_i_melt_dt
-    "q_s_n":              {"units": "m^3/s",  "long_name": "Supraglacial flux", "symbol": "q_s"},
-    "q_d_n":              {"units": "m^3/s",  "long_name": "Subglacial flux", "symbol": "q_d"},
-    "q_c_n":              {"units": "m^3/s",  "long_name": "Inter-cauldron flux", "symbol": "q_c"},
+    "q_s_n":              {"units": "m^3/s",  "long_name": "Supraglacial flow", "symbol": "q_s"},
+    "q_d_n":              {"units": "m^3/s",  "long_name": "Subglacial flow", "symbol": "q_d"},
+    "q_c_n":              {"units": "m^3/s",  "long_name": "Inter-cauldron flow", "symbol": "q_c"},
     "u_ice_bar":          {"units": "m/s",    "long_name": "Average ice inflow velocity", "symbol": "u_{ice}"},
     "phi_w":              {"units": "1",      "long_name": "Drainage water volume fraction", "symbol": "phi_w"},
     "phi_p":              {"units": "1",      "long_name": "Drainage pyroclast volume fraction", "symbol": "phi_p"},
@@ -236,12 +238,12 @@ class IceCauldron:
     nu: Number  = attrs.field(default   = 0.3, # Poisson's ratio for glacier ice. Values 0.3 to 0.4 are frequently used
                               validator = attrs_validate_nonnegative)
 
-    # ----- Magma flux & heat transfer ---------
+    # ----- Magma flow & heat transfer ---------
     # Estimated total airborne tephra volume (used as a stopping condition)
     V_t_max: Number      = attrs.field(default   = 0.95e9 * 1.2 * 0.5,
                                        validator = attrs_validate_nonnegative)
 
-    Q_decay_frac: Number = attrs.field(default   = 0.3, # (-) Remaining fraction of airborne tephra after which to force plume flux decay
+    Q_decay_frac: Number = attrs.field(default   = 0.3, # (-) Remaining fraction of airborne tephra after which to force plume flow decay
                                        validator = attrs_validate_nonnegative)
     Q_0: Number          = attrs.field(default   = 5e7, # (kg/s) Total magma discharge rate
                                        validator = attrs_validate_nonnegative)
@@ -278,7 +280,7 @@ class IceCauldron:
     # solver-state design is worked out.
 
     chi: float               = attrs.field(init=False)  # (m3/kg) MAX volume ice meltable per kg magma
-    t_Qdecay: float | None   = attrs.field(init=False, default=None)  # (s) Time at which eruption mass flux begins to decay
+    t_Qdecay: float | None   = attrs.field(init=False, default=None)  # (s) Time at which eruption mass flow begins to decay
     # TRANSLATION NOTE: TODO t_Qdecay is declared but never assigned within IceCauldron.m's
     # constructor or its other methods - presumably set elsewhere (gvMain.m / glaciovolcano.m,
     # not yet translated). Left as None here; flagging rather than guessing at its assignment
@@ -313,8 +315,9 @@ class IceCauldron:
     # Turn on/off sup. flow out of cauldrons
     supraglacial_drainage_mode: str = "overflow"  # "overflow", "off"
 
-    # If true, all plume material fluxes (water, pyroclasts) and dimensions will be fixed to 0
-    disable_plume_flux: bool = True
+    # Set plume flow on/off/test mode. Off disables all plume material flows (water, pyroclasts) 
+    # and dimensions will be fixed to 0. Defaults to off until re-implemented.
+    plume_flow_mode: str = "off"  # "emulator" (OutOfOrder), "off", "test". Eventually could have classic "interp"
     terminal_condition: str = "default"  # "default", "t_final"
     plume_emulator_json: str = "hydroplume_emulator_2025-04-22.json"  # JSON containing random forest emulator parameters
     plume_emulator: list[dict] | None = attrs.field(init=False, default=None)  # Structure array containing random forest parameters
@@ -323,10 +326,7 @@ class IceCauldron:
     VAR_INFO: ClassVar[dict] = ICE_CAULDRON_VAR_INFO  # defined above the class
 
     # ---- Hidden (bookkeeping) fields ----
-    # TRANSLATION NOTE: these were MATLAB `properties (Hidden)` - per-instance properties with
-    # static content never mutated per-instance anywhere in the source. Translated as ClassVar
-    # tuples (shared, immutable) rather than per-instance dataclass fields, matching actual
-    # usage. per_cauldron_fields lists real attribute names, so its entries are renamed to
+    # TRANSLATION NOTE: per_cauldron_fields lists real attribute names, so its entries are renamed to
     # match this file's snake_case identifiers (open_cauldron, ice_free_cauldron). By contrast,
     # vector_solution_vars/vector_derived_vars/etc. are symbolic solver-variable-name labels,
     # not real Python attributes on this class (e.g. 'horizontalMeltingRate_n' has no
@@ -387,7 +387,7 @@ class IceCauldron:
 
         # ---- Calculate secondary constants ----
 
-        # Calculate cauldron magma flux and check geometry
+        # Calculate cauldron magma flow and check geometry
         L_n = self.params["L_n"].values
         self.params["Q_n"] = ("cauldron", self.Q_0 * (L_n / L_n.sum()))
         if self.geometry == "cylinder":
@@ -411,7 +411,7 @@ class IceCauldron:
         # Flexural parameter
         self.E_prime = self.E / (1 - self.nu**2)
 
-        if not self.disable_plume_flux:
+        if self.plume_flow_mode == "emulator":
             self.plume_emulator = self.load_emulator()
 
         # Metadata checks: every field needs a complete VAR_INFO entry; attach attrs to params
@@ -960,20 +960,20 @@ class IceCauldron:
 
     # ------------------------------- PLUME ---------------------------------
     # Translated from @IceCauldron/getPlumeFluxes.m
-    def get_plume_fluxes(self, Ze: ArrayLike, Q: ArrayLike, a: ArrayLike, L: ArrayLike) -> tuple[np.ndarray, ...]:
+    def get_plume_flows(self, Ze_n: ArrayLike, Q_n: ArrayLike, a_n: ArrayLike, L_n: ArrayLike) -> tuple[np.ndarray, ...]:
         """[h_m, r_C, qw0, qwC, qs0, qsC] = getPlumeFluxes(obj, Ze, Q, a, L)
-        Given matched vector of Ze, Q, return 6 plume flux/length values:
+        Given matched vector of Ze, Q, return 6 plume flow/length values:
         Input:
-          -> Ze : (m) Current water depth above vent
-          -> Q  : (kg/s) Current mass eruption rate at vent
-          -> a  : (m) Cauldron radius/half-width
-          -> L  : (m) Cauldron (fissure segment) length
+          -> Ze_n : (m) Current water depth above vent (per cauldron)
+          -> Q_n  : (kg/s) Current mass eruption rate at vent (per fissure segment)
+          -> a_n  : (m) Cauldron radius/half-width
+          -> L_n  : (m) Cauldron (fissure segment) length
 
         Output:
-          -> Qs0  : (kg/s) Mass flux of pyroclasts into the subaerial plume base
-          -> QsC  : (kg/s) Mass flux of pyroclasts at collapse point or plume max height
-          -> Qw0  : (kg/s) Mass flux of water into the subaerial plume base
-          -> QwC  : (kg/s) Mas flux of water at collapse point or plume max height
+          -> Qs0  : (kg/s) Mass flow of pyroclasts into the subaerial plume base
+          -> QsC  : (kg/s) Mass flow of pyroclasts at collapse point or plume max height
+          -> Qw0  : (kg/s) Mass flow of water into the subaerial plume base
+          -> QwC  : (kg/s) Mas flow of water at collapse point or plume max height
           -> Hmax : (m) Max plume height
           -> Rmax : (m) Plume radius at collapse point or max height
 
@@ -987,33 +987,44 @@ class IceCauldron:
         #
         # TRANSLATION NOTE: per project direction, this whole random-forest emulator path is an
         # in-development/test mode, not finalized physics - see gvpy/plume.py's module docstring.
-        # The disable_plume_flux "off" branch (zeros) is the reliable path for now.
+        # The plume_flow_mode "off" branch (zeros) is the reliable path for now.
         #
         # TRANSLATION NOTE: MATLAB's two branches produce different shapes (zeros(6,1) column vs.
-        # predictForest's (1,6) row), but linear-indexes both identically as fluxes(1)..fluxes(6).
+        # predictForest's (1,6) row), but linear-indexes both identically as flows(1)..flows(6).
         # Unified here to a flat length-6 array for both branches, consistent with this project's
         # convention of not carrying MATLAB's row/column distinction into Python.
-        if self.disable_plume_flux:
-            fluxes = np.zeros(6)
-        else:
-            log_q = np.log10(Q)
-            fluxes = predict_forest(self.plume_emulator, np.array([[Ze, log_q]]))[0]
+        def get_test_flows(Ze_n: ArrayLike, Q_n: ArrayLike, a_n: ArrayLike, L_n: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            """Return test flows for the 'test' plume_flow_mode."""
+            h_m = 1000 * np.ones_like(Ze_n)  # Plume height (m)
+            q_w_p_n = 0.5 * Q_n  # Net water flow (kg/s)
+            q_s_p_n = 0.5 * Q_n  # Net pyrocast plume flow (kg/s)
 
-        h_m = fluxes[0]  # Plume height (m)
-        r_c = fluxes[1]  # Plume radius at collapse point or buoyancy (m)
-        qw0 = fluxes[2]  # Water flux at plume source (kg/s)
-        qwc = fluxes[3]  # Water flux at collapse point/buoyancy (kg/s)
-        qs0 = fluxes[4]  # Pyroclast flux at plume source (kg/s)
-        qsc = fluxes[5]  # Pyroclast flux at collapse point/buoyancy (kg/s)
+            return h_m, q_w_p_n, q_s_p_n
+        
+        if self.plume_flow_mode == "off":
+            flows = np.zeros(6)
+        elif self.plume_flow_mode == "test":
+            h_m, q_w_p_n, q_s_p_n = get_test_flows(Ze_n=Ze_n, Q_n=Q_n, a_n=a_n, L_n=L_n)
 
-        # Todo - figure out how the collapse radius part and net flux needs to work
+        elif self.plume_flow_mode == "emulator":
+            log_q = np.log10(Q_n)
+            flows = predict_forest(self.plume_emulator, np.array([[Ze_n, log_q]]))[0]
+
+        h_m = flows[0]  # Plume height (m)
+        r_c = flows[1]  # Plume radius at collapse point or buoyancy (m)
+        qw0 = flows[2]  # Water flow at plume source (kg/s)
+        qwc = flows[3]  # Water flow at collapse point/buoyancy (kg/s)
+        qs0 = flows[4]  # Pyroclast flow at plume source (kg/s)
+        qsc = flows[5]  # Pyroclast flow at collapse point/buoyancy (kg/s)
+
+        # Todo - figure out how the collapse radius part and net flow needs to work
         # again...?
 
         # Rectangular cauldron footprint
         # if strcmp(obj.geometry, 'cylinder')
         #     cpoly = polyshape([-a -a a a],[-L L L -L]/2);
         # else
-        #     error('Only cylindrical cauldron geometries are implemented for plume flux')
+        #     error('Only cylindrical cauldron geometries are implemented for plume flow')
         # end
 
         # Circular plume footprint
@@ -1033,10 +1044,11 @@ class IceCauldron:
         #
         # qwNet = qw0 + qw_clps;
         # qsNet = qs0 + qs_clps;
-        # Qv    = fluxSurfaces.Qv;
+        # Qv    = flowSurfaces.Qv;
         # hwv   = h_m;
 
-        return h_m, r_c, qw0, qwc, qs0, qsc
+        # return h_m, r_c, qw0, qwc, qs0, qsc
+        return h_m, q_w_p_n, q_s_p_n
 
     # --------------------------- SUPRAGLACIAL DRAINAGE -----------------------
     # Translated from @IceCauldron/get_q_s.m
@@ -1090,11 +1102,11 @@ class IceCauldron:
     #
     # FLAG: per project direction, the ENTIRE subglacial drainage component below is explicitly
     # in-development/test-only, not finalized physics (see gvpy/subglacial.py's module
-    # docstring). get_drainage_fluxes - the actual subglacial + inter-cauldron drainage flux
+    # docstring). get_drainage_flows - the actual subglacial + inter-cauldron drainage flow
     # calculation - is not implemented in the MATLAB source at all (dummy zeros only), and
     # solve_delta_p only implements one regime, explicitly erroring otherwise. Bugs/incompleteness
     # here are preserved as-is per CLAUDE.md's in-development-components policy, not fixed.
-    def get_fluxural_rigidity(self, h: float | np.ndarray) -> float | np.ndarray:
+    def get_flowural_rigidity(self, h: float | np.ndarray) -> float | np.ndarray:
         """D = getFluxuralRigidity(obj,h)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Get flexural rigidity of a beam of glacier ice with thickness h (m).
@@ -1140,7 +1152,7 @@ class IceCauldron:
 
         h_i, _, _, _, _ = self.get_elevation_profiles(x)
 
-        D = self.get_fluxural_rigidity(h_i)
+        D = self.get_flowural_rigidity(h_i)
 
         # A) One quarter flexural wavelength formulation
         # l_lambda = 2*pi.*(D./(obj.Constants.g*obj.Constants.rho_ice)).^(1/4) / 4;
@@ -1341,7 +1353,7 @@ class IceCauldron:
 
         return rho_f, phi_w, phi_p, chi_f
 
-    def get_drainage_fluxes(
+    def get_drainage_flows(
         self, phi_w: float, P_w: float, H_w_n: np.ndarray, H_cum_n: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """[q_d_n,q_c_n] = getDrainageFluxes(obj,phi_w,P_w,H_w_n,H_cum_n)
@@ -1349,8 +1361,8 @@ class IceCauldron:
         Calculate the three flood discharge terms
         """
         # TRANSLATION NOTE: not implemented in the MATLAB source either - this only returns dummy
-        # zero fluxes and ignores all of its inputs (phi_w, P_w, H_w_n, H_cum_n). The actual
-        # subglacial + inter-cauldron drainage flux calculation remains to be written.
+        # zero flows and ignores all of its inputs (phi_w, P_w, H_w_n, H_cum_n). The actual
+        # subglacial + inter-cauldron drainage flow calculation remains to be written.
         q_d_n = np.zeros(self.n_cauldrons)  # dummy for now
         q_c_n = np.zeros(self.n_cauldrons)  # dummy for now
 

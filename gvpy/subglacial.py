@@ -9,9 +9,9 @@ Delta_P_from_U_tip).
 
 TRANSLATION NOTE: per project direction, the ENTIRE subglacial drainage
 component is explicitly in-development/test-only, not finalized physics -
-e.g. IceCauldron.get_drainage_fluxes (the actual subglacial + inter-cauldron
-drainage flux calculation) is not implemented in the MATLAB source at all,
-only returning dummy zero fluxes. solveDeltaP itself only implements one
+e.g. IceCauldron.get_drainage_flows (the actual subglacial + inter-cauldron
+drainage flow calculation) is not implemented in the MATLAB source at all,
+only returning dummy zero flows. solveDeltaP itself only implements one
 regime (x <= l_lambda) and explicitly errors otherwise. Bugs/incompleteness
 here are preserved as-is per CLAUDE.md's in-development-components policy,
 not silently fixed.

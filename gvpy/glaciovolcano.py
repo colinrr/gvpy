@@ -63,7 +63,12 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
     # Density model for drainage outflow
     #     [rho_f,phi_w,phi_p,chi_f] = gv.drainageDensity;
     _, phi_w, phi_p, _ = gv.drainage_density()
-    q_d_n, q_c_n = gv.get_drainage_fluxes(phi_w, P_w, H_w_n, H_cum_n)
+    q_d_n, q_c_n = gv.get_drainage_flows(phi_w, P_w, H_w_n, H_cum_n)
+
+    # =============== DRAINAGE ===============
+    # Complete set of plume params: h_m, r_c, qw0, qwc, qs0, qsc
+    # Simplified to single flows for now for testing (and maybe for final version as well)
+    h_m, q_w_p_n, q_s_p_n = gv.get_plume_flows(Ze_n=H_w_n, Q_n=gv.params["Q_n"].values, a_n=a_n, L_n=gv.L_n)
 
     # =============== CONS. OF VOLUME EQN'S ===============
 
@@ -79,7 +84,7 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
     # Pyroclast volume in cavity
     dV_p_dt = Q_n / gv.rho_p - phi_p * (q_d_n + q_c_n)
 
-    # ---> Iterate here to compensate volume flux with supra-glacial
+    # ---> Iterate here to compensate volume flow with supra-glacial
     # drainage
     #     q_s_n = gv.get_q_s(H_cum_n, (dV_ice_dt+dV_w_dt+dV_p_dt - gv.get_CV_ice_area .* (da_dt)) );
     q_s_n = gv.get_q_s((V_w_n + V_p_n), V_cavity_n, (dV_w_dt + dV_p_dt), dV_i_melt_dt)

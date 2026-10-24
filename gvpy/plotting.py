@@ -154,7 +154,7 @@ def _plot_data(result: GVResult) -> xr.Dataset:
     """result.data plus plotting-only derived variables."""
     data = result.data
     if all(q in data for q in ("q_s_n", "q_d_n", "q_c_n")):
-        # Cumulative discharge: time integral of all outflow volume fluxes (display-only, not model output)
+        # Cumulative discharge: time integral of all outflow volume flows (display-only, not model output)
         q_out = data["q_s_n"] + data["q_d_n"] + data["q_c_n"]
         V_discharge_cum = cumulative_trapezoid(q_out.values, data["time"].values, axis=0, initial=0)
         attrs = {"units": "m^3", "long_name": "Cum. Discharge", "symbol": "V_{out}"}
@@ -394,7 +394,7 @@ PANEL_VARS = {
     "Heating Efficiency": ["f_i_n"],
     "Conduit Flux": ["Q_n"],
     "Ice Flux": ["u_ice_bar"],
-    "Plume Flux": None,  # plume fluxes are not computed in the ODE right-hand side
+    "Plume Flux": None,  # plume flows are not computed in the ODE right-hand side
     "Intracauldron Flux": ["q_c_n"],
     "Supraglacial Flux": ["q_s_n"],
     "Subglacial Flux": ["q_d_n"],
@@ -410,7 +410,7 @@ LINK_GROUP_XY = NAMES_LEFT[0:4]
 PANEL_Y_LABELS = {**{name: "Volume" for name in LINK_GROUP_XY}, "Material Heights": "Material height"}
 
 # Panels without model output yet: blank axes with these y labels, as (long name, model units)
-PLACEHOLDER_AXES = {"Sheet Volume": ("Volume", "m^3"), "Plume Flux": ("Plume flux", "kg/s")}
+PLACEHOLDER_AXES = {"Sheet Volume": ("Volume", "m^3"), "Plume Flux": ("Plume flow", "kg/s")}
 
 # Formatting Groups (Which axes should have X-labels hidden?)
 HIDE_X_LABELS = [NAMES_LEFT[i] for i in (0, 2, 4, 6)] + NAMES_RIGHT[:-1]
@@ -489,7 +489,7 @@ def plot_results(
     """Results dashboard for one or more model runs.
 
     panels        = None for the full layout (from plot_layout.m: a 2x2 grid of stacked panel
-                    pairs, beside a column of 6 flux panels; plus a Geometry tab), or a list of panel names (see
+                    pairs, beside a column of 6 flow panels; plus a Geometry tab), or a list of panel names (see
                     PANEL_VARS) to show only those, in order, in an ncols-wide grid.
     display_units = optional overrides/additions to DISPLAY_UNITS, e.g. {"s": ("min", 1/60)}
     Returns a Panel layout - display it in a notebook, or call .show() from a script.

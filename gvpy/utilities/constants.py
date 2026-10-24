@@ -19,7 +19,7 @@ class ThermoConstants:
     # rho_t   = 1000; % Tomasson 1996 value for tephra on Myrdalsandur, in pretty good agreement with model results
     # T_m     = 1450;    % K
 
-    # rho_m   = 2600; % We need this density for the appropriate conduit heat/mass flux. Can use this density or a reduced tephra density for flood discharge mass
+    # rho_m   = 2600; % We need this density for the appropriate conduit heat/mass flow. Can use this density or a reduced tephra density for flood discharge mass
     #                 # Magma basalt lava-- unfragmented (kg/m^3); (Gudmundsson, 2003)
 
     # Can use a second bulk tephra density for volume in vault later? This

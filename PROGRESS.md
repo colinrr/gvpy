@@ -34,13 +34,13 @@ Last updated: 2026-09-27
     `get_elevation_profiles` (from `IceCauldron.m` itself).
   - Vent/melting & ice inflow: `get_u_ice`, `get_f_i`, `get_u_melt`,
     `get_da_dt`, `get_material_heights`.
-  - Plume: `get_plume_fluxes`.
+  - Plume: `get_plume_flows` (run mode via `plume_flow_mode`: "off"/"test"/"emulator", replacing `disable_plume_flux`).
   - Supraglacial drainage: `get_q_s`. (No standalone helpers needed, so no
     `gvpy/supraglacial.py` was created - that pattern is reserved for
     components with local-function dependencies, per `plume.py`/`subglacial.py`.)
-  - Subglacial drainage (in development): `get_fluxural_rigidity`,
+  - Subglacial drainage (in development): `get_flowural_rigidity`,
     `get_l_lambda`, `get_u_tip`, `get_del_h`, `drainage_density`,
-    `get_drainage_fluxes` (dummy stub, unimplemented in MATLAB too),
+    `get_drainage_flows` (dummy stub, unimplemented in MATLAB too),
     `solve_delta_p`.
 - `gvpy/glaciovolcano.py` - the ODE right-hand side (`glaciovolcano.m`);
   `glaciovolcano(t, y, gv, return_par=False)`.
@@ -57,7 +57,7 @@ Last updated: 2026-09-27
   `plotSimulationTimeSeries.m`, `plotCauldronGeometry.m` and `getEventsCmap.m`.
   `plot_results(results, panels=None, display_units=None)` takes one `GVResult`,
   a list, or a `{label: GVResult}` dict and returns a Panel layout: the 14
-  panels from `plot_layout.m` (placeholders for Sheet Volume and Plume Flux,
+  panels from `plot_layout.m` (placeholders for Sheet Volume and Plume Flow,
   which have no model output yet), with all time axes linked and the volume
   panels also linked in y. Works inline in notebooks (`pn.extension()`) or via
   `.show()`. Holds only display-unit conversions (`DISPLAY_UNITS`, keyed by
@@ -78,7 +78,7 @@ Last updated: 2026-09-27
   - New field `glen_n` (Glen's flow-law exponent, default 3); `A`'s units in
     `VAR_INFO` follow it (`Pa^(-{glen_n}) s^-1`).
   - `glaciovolcano`'s `par` also returns `Q_n`, `u_ice_bar`, `q_d_n`, `q_c_n`
-    (for the flux panels); `get_u_ice` returns per-cauldron zeros in "off" mode.
+    (for the flow panels); `get_u_ice` returns per-cauldron zeros in "off" mode.
   - `get_material_heights` returns zero fill heights when there is no cavity
     (`c_n` or `V_cavity_n` ~ 0 via `np.isclose`), warning if volumes are
     inconsistent beyond `1e-6 * V_CV_n`; `get_u_melt` evaluates its ice-free
@@ -145,7 +145,7 @@ review:
   in MATLAB (an error on the next solve). Keep as an error and flag, or
   handle properly.
 - `gvpy/ice_cauldron.py` `get_material_heights`, called from the RHS - its
-  results only feed `get_drainage_fluxes` (dummy zeros) yet it runs two
+  results only feed `get_drainage_flows` (dummy zeros) yet it runs two
   `minimize_scalar` calls per cauldron per RHS call, which is removable
   overhead to measure. Its `assert H_w >= 0` may also trip on optimizer
   tolerance (SciPy vs `fminbnd`); if it does, stop and discuss rather than
@@ -167,7 +167,7 @@ review:
   remain untested), `get_u_ice` per-cauldron shape, and
   `get_material_heights`' no-cavity handling (no warnings on solver-sized
   noise; warns on real volume inconsistency).
-- `tests/test_glaciovolcano.py` - the flux terms added to `par` are per cauldron.
+- `tests/test_glaciovolcano.py` - the flow terms added to `par` are per cauldron.
 - `tests/test_var_info.py` - every field has complete `VAR_INFO`; `params`,
   `result.data` and `result.events` carry units/long_name after 1- and
   2-cauldron `gv_main` runs; `A`'s units follow `glen_n`.
@@ -177,7 +177,7 @@ review:
   unlisted-units warning; missing-variable placeholder; single closed
   geometry snapshot.
 - Suite: 47 passing, plus the `test_data.py` stub.
-- `tests/test_plume.py` - `get_plume_fluxes` (disabled-flux path only) and
+- `tests/test_plume.py` - `get_plume_flows` (`plume_flow_mode="off"` path only) and
   `predict_tree`/`predict_forest` against small synthetic trees.
 - `tests/test_supraglacial.py` - `get_q_s` (off mode, overflow mode with and
   without the overflow condition triggered, shape-mismatch assertion). Also

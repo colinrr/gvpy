@@ -42,8 +42,8 @@ dat = gv_main(
     n_cauldrons=1,  # Single cauldron
     G_n=400,  # 400 m ice thickness
     ice_inflow_mode="off",  # No ice flow
-    # supraglacial_drainage_mode="off",
-    disable_plume_flux=True,
+    supraglacial_drainage_mode="off",
+    plume_flow_mode="test",
 )
 print(f"Elapsed time: {time.perf_counter() - tic:.2f} s")  # toc
 

@@ -12,12 +12,12 @@ from gvpy.plotting import plot_cauldron_geometry, plot_results, plot_time_series
 
 @pytest.fixture(scope="module")
 def r1():
-    return gv_main(n_cauldrons=1, G_n=400, disable_plume_flux=True, supraglacial_drainage_mode="off")
+    return gv_main(n_cauldrons=1, G_n=400, plume_flow_mode="off", supraglacial_drainage_mode="off")
 
 
 @pytest.fixture(scope="module")
 def r2():
-    return gv_main(n_cauldrons=2, G_n=[300, 400], disable_plume_flux=True)
+    return gv_main(n_cauldrons=2, G_n=[300, 400], plume_flow_mode="off")
 
 
 def _plots(layout):

@@ -32,7 +32,7 @@ def test_missing_entry_warns():
 @pytest.mark.parametrize("n_cauldrons, G_n", [(1, 400), (2, [300, 400])])
 def test_outputs_carry_units_and_long_name(n_cauldrons, G_n):
     # A MissingVarInfoWarning anywhere in the run fails this test (pytest filterwarnings config)
-    result = gv_main(n_cauldrons=n_cauldrons, G_n=G_n, disable_plume_flux=True)
+    result = gv_main(n_cauldrons=n_cauldrons, G_n=G_n, plume_flow_mode="off")
     for ds in (result.gv.params, result.data, result.events):
         for name in list(ds.data_vars) + list(ds.coords):
             info = IceCauldron.VAR_INFO[name]

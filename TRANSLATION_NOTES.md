@@ -120,9 +120,9 @@ intentional, flagged decisions).
   `refine + 1` points precede the event; Python negative indexing would silently
   wrap, so it raises `IndexError` explicitly. The step is also capped at the
   remaining span (SciPy raises if `first_step` exceeds it; `ode15s` just clips).
-- **`par` exposes more flux terms**: `Q_n`, `u_ice_bar`, `q_d_n`, `q_c_n` are
+- **`par` exposes more flow terms**: `Q_n`, `u_ice_bar`, `q_d_n`, `q_c_n` are
   returned alongside MATLAB's `par` fields, so they reach `result.data` for the
-  dashboard flux panels.
+  dashboard flow panels.
 
 ### Model methods changed this session (user-approved)
 
@@ -142,7 +142,7 @@ intentional, flagged decisions).
   `theta_b`, `k_nikuradse`, `E_prime`, fastest/slowest indices) have no default
   and no `None` in their type. `E_prime` validates directly (the `allow_none`
   wrapper was removed). `t_Qdecay` (never assigned) and `plume_emulator` (only
-  loaded when plume fluxes are on) stay optional.
+  loaded when plume flows are on) stay optional.
 - **New field `glen_n`** (Glen's flow-law exponent, default 3), paired with `A`.
 - **Type hints** on every function in `gvpy/`. Two existing hints were wrong and
   were corrected: `get_elliptical_cylinder_sa(a, c)` takes arrays, and
@@ -212,9 +212,9 @@ visibility since some of these make entire code paths currently unusable.
   in MATLAB (`% case 6 % Based on pressure/discharge/proportions in
   cauldron?`), never an implemented branch - selecting it (a value the attrs
   validator otherwise allows, range 1-6) raises `UnboundLocalError`.
-- **`get_drainage_fluxes` is a dummy stub** returning zero fluxes - not
+- **`get_drainage_flows` is a dummy stub** returning zero flows - not
   implemented in the MATLAB source either. This is the actual
-  subglacial-drainage AND inter-cauldron-flow flux calculation, so both
+  subglacial-drainage AND inter-cauldron-flow flow calculation, so both
   components are effectively unimplemented pending this.
 - **`get_u_melt`'s and `get_q_s`'s `faafo`/`faafo fix it` placeholder bugs**:
   MATLAB's `catch` blocks contain literal undefined-function placeholder
@@ -237,7 +237,7 @@ visibility since some of these make entire code paths currently unusable.
   practice because `get_f_i` already fails unless every cauldron went ice-free,
   and a cauldron opens before it can go ice-free.
 - **`get_material_heights` in the RHS**: its results only feed
-  `get_drainage_fluxes` (dummy zeros), yet it runs two `minimize_scalar` calls
+  `get_drainage_flows` (dummy zeros), yet it runs two `minimize_scalar` calls
   per cauldron per RHS call (removable overhead, MATLAB does the same). Its
   `assert H_w >= 0` could in principle trip on optimizer tolerance (SciPy vs
   `fminbnd`) - not seen so far. (The divide-by-zero warnings at the initial
@@ -255,9 +255,9 @@ visibility since some of these make entire code paths currently unusable.
   assigned anywhere in the source - left as `None` in Python, not guessed at.
 - **Plume emulator JSON is intentionally absent.** The default
   `plume_emulator_json = "hydroplume_emulator_2025-04-22.json"` was removed
-  from the repo (disk space, per project direction) - the `get_plume_fluxes`
+  from the repo (disk space, per project direction) - the `get_plume_flows`
   random-forest path can't be exercised end-to-end until it's restored (with
-  corrections) as a future task. The `disable_plume_flux` zeros-path is the
+  corrections) as a future task. The `disable_plume_flow` zeros-path is the
   reliable path for now.
 - **`get_u_tip` recomputes the Nikuradse roughness height locally** rather
   than reusing `self.k_nikuradse` (computed identically in
@@ -280,7 +280,7 @@ expect needing a call on in upcoming translation/development work.
   RMSE thresholds - to be worked out together.
 - **Dashboard follow-ups**: saving/loading `GVResult` (`to_netcdf` keeps the
   `VAR_INFO` attrs), run/cauldron selectors for the geometry panel, tabs /
-  alternate views, and moving the flux-panel placeholders to real outputs as
+  alternate views, and moving the flow-panel placeholders to real outputs as
   the plume and drainage physics land.
 - **Non-dimensionalization**: `VAR_INFO` holds physical units only. When it is
   implemented, `add_var_attrs` is the one function to change, and each variable
@@ -301,7 +301,7 @@ expect needing a call on in upcoming translation/development work.
   currently sourced from `physics_sandbox_2023/predictForest.m`, a
   dev-scratch file, not a settled utility - will need re-examination
   together.
-- **Inter-cauldron flow and subglacial drainage physics**: `getDrainageFluxes`
+- **Inter-cauldron flow and subglacial drainage physics**: `getDrainageFlows`
   currently stubs both; once real physics is designed, it may make sense to
   split them into separate functions/components rather than one combined
   (currently dummy) call.
