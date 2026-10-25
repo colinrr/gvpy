@@ -94,7 +94,13 @@ _TOP_HAT_KERNELS = {
 @attrs.frozen
 class SmoothTopHat:
     """Piecewise smoothed top hat: smooth rise 0 -> 1, flat top at 1, smooth decay to 0.
-
+    Allows assymmetric rise and decay lengths, and different kernels for the rise and decay.
+    - The function is 0 outside [0, x_end], and the rise starts at x.
+    - Includes dimensionalization options: y_max scales the function vertically, area scales
+      it horizontally to achieve a total area under the curve equal to "area". x_0 shifts the 
+      function horizontally to start at x_0 instead of 0. Dimensionalization only happens with
+        the dimensionalize=True flag in __call__, get_xy, x_end, and get_area.
+    
     x = 0 is the start of the rise; the function ends at x_end, where the tail reaches 0
     (or tol, for the logistic kernel). Zero outside [0, x_end].
 
