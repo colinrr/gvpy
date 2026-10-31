@@ -38,7 +38,7 @@ Last updated: 2026-09-27
   - Supraglacial drainage: `get_q_s`. (No standalone helpers needed, so no
     `gvpy/supraglacial.py` was created - that pattern is reserved for
     components with local-function dependencies, per `plume.py`/`subglacial.py`.)
-  - Subglacial drainage (in development): `get_flowural_rigidity`,
+  - Subglacial drainage (in development): `get_flexural_rigidity`,
     `get_l_lambda`, `get_u_tip`, `get_del_h`, `drainage_density`,
     `get_drainage_flows` (dummy stub, unimplemented in MATLAB too),
     `solve_delta_p`.

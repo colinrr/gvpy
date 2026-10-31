@@ -1002,20 +1002,22 @@ class IceCauldron:
             return h_m, q_w_p_n, q_s_p_n
         
         if self.plume_flow_mode == "off":
-            flows = np.zeros(6)
+            flows = np.zeros((3, self.n_cauldrons)).squeeze()
+
         elif self.plume_flow_mode == "test":
             h_m, q_w_p_n, q_s_p_n = get_test_flows(Ze_n=Ze_n, Q_n=Q_n, a_n=a_n, L_n=L_n)
 
         elif self.plume_flow_mode == "emulator":
+            raise NotImplementedError("Plume emulator mode is in revamp and not yet implemented in this translation.")
             log_q = np.log10(Q_n)
             flows = predict_forest(self.plume_emulator, np.array([[Ze_n, log_q]]))[0]
 
-        h_m = flows[0]  # Plume height (m)
-        r_c = flows[1]  # Plume radius at collapse point or buoyancy (m)
-        qw0 = flows[2]  # Water flow at plume source (kg/s)
-        qwc = flows[3]  # Water flow at collapse point/buoyancy (kg/s)
-        qs0 = flows[4]  # Pyroclast flow at plume source (kg/s)
-        qsc = flows[5]  # Pyroclast flow at collapse point/buoyancy (kg/s)
+            h_m = flows[0]  # Plume height (m)
+            r_c = flows[1]  # Plume radius at collapse point or buoyancy (m)
+            qw0 = flows[2]  # Water flow at plume source (kg/s)
+            qwc = flows[3]  # Water flow at collapse point/buoyancy (kg/s)
+            qs0 = flows[4]  # Pyroclast flow at plume source (kg/s)
+            qsc = flows[5]  # Pyroclast flow at collapse point/buoyancy (kg/s)
 
         # Todo - figure out how the collapse radius part and net flow needs to work
         # again...?
@@ -1044,7 +1046,7 @@ class IceCauldron:
         #
         # qwNet = qw0 + qw_clps;
         # qsNet = qs0 + qs_clps;
-        # Qv    = flowSurfaces.Qv;
+        # Qv    = fluxSurfaces.Qv;
         # hwv   = h_m;
 
         # return h_m, r_c, qw0, qwc, qs0, qsc
@@ -1106,8 +1108,8 @@ class IceCauldron:
     # calculation - is not implemented in the MATLAB source at all (dummy zeros only), and
     # solve_delta_p only implements one regime, explicitly erroring otherwise. Bugs/incompleteness
     # here are preserved as-is per CLAUDE.md's in-development-components policy, not fixed.
-    def get_flowural_rigidity(self, h: float | np.ndarray) -> float | np.ndarray:
-        """D = getFluxuralRigidity(obj,h)
+    def get_flexural_rigidity(self, h: float | np.ndarray) -> float | np.ndarray:
+        """D = getFlexuralRigidity(obj,h)
         [SUBGLACIAL DRAINAGE - IN DEVELOPMENT]
         Get flexural rigidity of a beam of glacier ice with thickness h (m).
         INPUT:
@@ -1152,7 +1154,7 @@ class IceCauldron:
 
         h_i, _, _, _, _ = self.get_elevation_profiles(x)
 
-        D = self.get_flowural_rigidity(h_i)
+        D = self.get_flexural_rigidity(h_i)
 
         # A) One quarter flexural wavelength formulation
         # l_lambda = 2*pi.*(D./(obj.Constants.g*obj.Constants.rho_ice)).^(1/4) / 4;
