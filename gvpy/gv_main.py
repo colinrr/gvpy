@@ -389,6 +389,7 @@ def parse_events(te: np.ndarray, ye: np.ndarray, ie: np.ndarray, gv: IceCauldron
         if event_name == "openCauldron":
             # Specify which cauldron has opened
             gv.open_cauldron[which_caul] = True
+            gv.open_time[which_caul] = te[ii]
             # Recalculate new c_n for rectangular geometry (assuming step change)
             # TRANSLATION NOTE: MATLAB reads gv.L_n(whichCaul)/gv.G_n(whichCaul); here the
             # broadcast per-cauldron values in gv.params are used (raw gv.L_n/gv.G_n may be scalars).

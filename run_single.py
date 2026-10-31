@@ -43,13 +43,13 @@ dat = gv_main(
     G_n=400,  # 400 m ice thickness
     ice_inflow_mode="off",  # No ice flow
     supraglacial_drainage_mode="off",
-    plume_flow_mode="test",
+    plume_flow_mode="test-fixed",
 )
 print(f"Elapsed time: {time.perf_counter() - tic:.2f} s")  # toc
 
 # ---- Results plot ----
 # TODO - model run dashboard plot
-plot_results(dat).show()  # opens in a browser; blocks until stopped (Ctrl-C)
+plot_results(dat, show_flow_modes=True).show()  # opens in a browser; blocks until stopped (Ctrl-C)
 
 print(c2)
 

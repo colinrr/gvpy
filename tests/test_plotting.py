@@ -41,11 +41,12 @@ def test_full_layout_renders_linked_without_warnings(which, r1, r2):
     assert x_groups[:16] == [16] * 16 and x_groups[16] == 1  # all time panels linked (across tabs); geometry separate
     assert y_groups[:4] == [4] * 4  # the four volume panels (incl. the blank Sheet Volume) share y
     titles = [label.text for label in layout.get_root().select({"type": Label})]
-    assert "Sheet Volume - NOT YET IMPLEMENTED" in titles and "Plume Flux - NOT YET IMPLEMENTED" in titles
+    assert "Sheet Volume - NOT YET IMPLEMENTED" in titles and "Plume Flow" in titles
+    assert not any(t.startswith("(mode") for t in titles)  # show_flow_modes defaults to False
 
 
 def test_panel_subset(r1):
-    layout = plot_results(r1, panels=["Cauldron Dimensions", "Supraglacial Flux"])
+    layout = plot_results(r1, panels=["Cauldron Dimensions", "Supraglacial Flow"])
     assert len(_plots(layout)) == 2
 
 
@@ -80,3 +81,26 @@ def test_geometry_single_closed_snapshot(r1):
     # One closed-cauldron snapshot: scalar a, c into s_spheroid (errored in MATLAB)
     overlay = plot_cauldron_geometry(r1, steps=[5])
     hv.render(overlay, backend="bokeh")
+
+
+def _label_texts(layout):
+    return [label.text for label in layout.get_root().select({"type": Label})]
+
+
+def test_flow_mode_subtitles(r1, r2):
+    texts = _label_texts(plot_results(r1, show_flow_modes=True))
+    assert "(mode: test-fixed)" not in texts
+    for mode in ("constant", "off"):  # conduit; ice inflow, plume, supraglacial and subglacial are all "off" in r1
+        assert f"(mode: {mode})" in texts
+    assert texts.count("(mode: off)") == 4
+    # Runs with different modes are listed per run
+    texts = _label_texts(plot_results({"single": r1, "double": r2}, panels=["Supraglacial Flow"], show_flow_modes=True))
+    assert "(modes: single: off; double: overflow)" in texts
+
+
+def test_plume_panel_shows_fixed_plume_flows():
+    result = gv_main(n_cauldrons=1, G_n=400, plume_flow_mode="test-fixed")
+    layout = plot_results(result, panels=["Plume Flow"], show_flow_modes=True)
+    assert "(mode: test-fixed)" in _label_texts(layout)
+    curves = [el for el in plot_time_series(result, ["q_w_p_n", "q_s_p_n"]) if isinstance(el, hv.Curve)]
+    assert len(curves) == 2 and max(c.dimension_values(1).max() for c in curves) > 0

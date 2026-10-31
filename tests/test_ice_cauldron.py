@@ -112,3 +112,17 @@ class TestVentMeltingIceInflow:
         with pytest.warns(UserWarning, match="no cavity"):
             _, (_, H_w, H_p, _) = self._no_cavity_heights(c_n=0.0, V_w_n=1e3)
         assert H_w == 0 and H_p == 0
+
+
+def test_subglacial_flow_mode_off_returns_zero_flows():
+    gv = IceCauldron(n_cauldrons=2)
+    assert gv.subglacial_flow_mode == "off"
+    q_d_n, q_c_n = gv.get_drainage_flows(0.4, 0.0, np.ones(2), np.ones(2))
+    assert np.array_equal(q_d_n, np.zeros(2)) and np.array_equal(q_c_n, np.zeros(2))
+
+
+def test_flow_modes_checked_on_init():
+    for name, allowed in IceCauldron.allowed_flow_modes.items():
+        assert getattr(IceCauldron(), name) in allowed  # defaults are allowed
+        with pytest.raises(ValueError, match=name):
+            IceCauldron(**{name: "not-a-mode"})

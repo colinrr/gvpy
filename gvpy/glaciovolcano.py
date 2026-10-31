@@ -23,7 +23,8 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
     # `return_par` flag, and `par` is a dict. Per-cauldron values are read from `gv.params`
     # (broadcast to arrays) rather than the raw gv.G_n / gv.L_n fields, which are stored as
     # passed (scalar or list). `global step_ct` is dropped: it is only referenced by the
-    # commented-out plotting hack below, never by active code. (t is unused - autonomous system.)
+    # commented-out plotting hack below, never by active code. (t is used only by get_plume_flows'
+    # time-based "test-fixed" profile.)
 
     # TODO: Build input/setup for u_ice_0
     # TODO: implement non-dimensionalization
@@ -68,7 +69,7 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
     # =============== DRAINAGE ===============
     # Complete set of plume params: h_m, r_c, qw0, qwc, qs0, qsc
     # Simplified to single flows for now for testing (and maybe for final version as well)
-    h_m, q_w_p_n, q_s_p_n = gv.get_plume_flows(Ze_n=H_w_n, Q_n=gv.params["Q_n"].values, a_n=a_n, L_n=gv.L_n)
+    h_m, q_w_p_n, q_s_p_n = gv.get_plume_flows(t=t, Ze_n=H_w_n, Q_n=gv.params["Q_n"].values, a_n=a_n, L_n=gv.L_n)
 
     # =============== CONS. OF VOLUME EQN'S ===============
 
@@ -79,10 +80,11 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
     dV_ice_dt = -dV_i_melt_dt + gv.get_cv_ice_area() * (da_dt - u_ice_bar)
 
     # Water in cavity(s)
-    dV_w_dt = C.RHO_ICE / C.RHO_W * dV_i_melt_dt - phi_w * (q_d_n + q_c_n)
+    # (magmatic water fraction n_w of the erupted mass enters as water, the rest as pyroclasts)
+    dV_w_dt = C.RHO_ICE / C.RHO_W * dV_i_melt_dt + gv.n_w * Q_n / C.RHO_W - phi_w * (q_d_n + q_c_n) - q_w_p_n
 
     # Pyroclast volume in cavity
-    dV_p_dt = Q_n / gv.rho_p - phi_p * (q_d_n + q_c_n)
+    dV_p_dt = (1 - gv.n_w) * Q_n / gv.rho_p - phi_p * (q_d_n + q_c_n) - q_s_p_n
 
     # ---> Iterate here to compensate volume flow with supra-glacial
     # drainage
@@ -128,11 +130,14 @@ def glaciovolcano(t: float, y: np.ndarray, gv: IceCauldron, return_par: bool = F
             "phi_w": phi_w,
             "phi_p": phi_p,
             "phi_r": 1 - phi_p - phi_w,
-            # Flux terms, exposed for plotting
+            # Flow terms, exposed for plotting
             "Q_n": Q_n,
             "u_ice_bar": u_ice_bar,
             "q_d_n": q_d_n,
             "q_c_n": q_c_n,
+            "h_m": h_m,
+            "q_w_p_n": q_w_p_n,
+            "q_s_p_n": q_s_p_n,
         }
         return ydot, par
 

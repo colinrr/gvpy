@@ -7,16 +7,46 @@ from gvpy.plume import predict_forest, predict_tree
 class TestGetPlumeFlows:
     """get_plume_flows, translated from @IceCauldron/getPlumeFluxes.m.
 
-    Only the plume_flow_mode "off" (default) path is exercised here - the
+    The "off" (default) and "test-fixed" paths are exercised here - the
     random-forest emulator path is an in-development/test mode that can't be
     run end-to-end without the (missing) emulator JSON file.
     """
 
     def test_disabled_plume_flow_returns_zeros(self):
-        c = IceCauldron()
+        c = IceCauldron(n_cauldrons=2)
         assert c.plume_flow_mode == "off"
-        h_m, r_c, qw0, qwc, qs0, qsc = c.get_plume_flows(Ze=10.0, Q=5e7, a=5.0, L=1000.0)
-        assert (h_m, r_c, qw0, qwc, qs0, qsc) == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for out in c.get_plume_flows(t=1000.0, Ze_n=10.0, Q_n=c.params["Q_n"].values, a_n=5.0, L_n=1000.0):
+            assert np.array_equal(out, np.zeros(2))
+
+    def test_fixed_flows_zero_while_closed(self):
+        c = IceCauldron(n_cauldrons=2, plume_flow_mode="test-fixed")
+        for out in c.get_plume_flows(t=1000.0, Ze_n=10.0, Q_n=c.params["Q_n"].values, a_n=5.0, L_n=1000.0):
+            assert np.array_equal(out, np.zeros(2))
+
+    def test_fixed_flows_profile_follows_each_open_time(self):
+        """Cauldron 0 opens at 100 s, cauldron 1 at 1000 s: each profile is zero before its
+        open time, at the vent-input plateau from +600 s to +2400 s, and zero after +6000 s."""
+        c = IceCauldron(n_cauldrons=2, plume_flow_mode="test-fixed", Q_0=4e7)
+        c.open_cauldron[:] = True
+        c.open_time[:] = [100.0, 1000.0]
+        Q_n = c.params["Q_n"].values
+        q_s_peak = Q_n * (1 - c.n_w) / c.rho_p
+        q_w_peak = Q_n * c.n_w / c.CONSTANTS.RHO_W
+
+        def flows(t):
+            return c.get_plume_flows(t=t, Ze_n=10.0, Q_n=Q_n, a_n=5.0, L_n=1000.0)
+
+        h_m, q_w_p_n, q_s_p_n = flows(500.0)  # cauldron 1 not started yet
+        assert q_s_p_n[0] > 0 and q_s_p_n[1] == 0.0 and h_m[1] == 0.0
+
+        _, q_w_p_n, q_s_p_n = flows(1700.0)  # both on their plateau
+        assert np.allclose(q_s_p_n, q_s_peak) and np.allclose(q_w_p_n, q_w_peak)
+
+        h_m, q_w_p_n, q_s_p_n = flows(6200.0)  # cauldron 0 ended, cauldron 1 in its tail
+        assert q_s_p_n[0] == 0.0 and 0 < q_s_p_n[1] < q_s_peak[1]
+
+        h_m, _, _ = flows(1700.0)
+        assert np.allclose(h_m, 345 * (c.rho_p * q_s_peak) ** 0.226)
 
 
 class TestPredictForest:

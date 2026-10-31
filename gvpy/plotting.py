@@ -373,12 +373,12 @@ NAMES_LEFT = [
 ]
 
 NAMES_RIGHT = [
-    "Conduit Flux",
-    "Ice Flux",
-    "Plume Flux",
-    "Intracauldron Flux",
-    "Supraglacial Flux",
-    "Subglacial Flux",
+    "Conduit Flow",
+    "Ice Flow",
+    "Plume Flow",
+    "Intracauldron Flow",
+    "Supraglacial Flow",
+    "Subglacial Flow",
 ]
 
 # Variables per panel (MATLAB's var2ax, completed for every panel). None = no model output yet.
@@ -392,12 +392,12 @@ PANEL_VARS = {
     "Material Heights": ["H_i_n", "H_w_n", "H_p_n", "H_cum_n"],
     "Melting Rates": ["horizontalMeltingRate_n", "verticalMeltingRate_n"],
     "Heating Efficiency": ["f_i_n"],
-    "Conduit Flux": ["Q_n"],
-    "Ice Flux": ["u_ice_bar"],
-    "Plume Flux": None,  # plume flows are not computed in the ODE right-hand side
-    "Intracauldron Flux": ["q_c_n"],
-    "Supraglacial Flux": ["q_s_n"],
-    "Subglacial Flux": ["q_d_n"],
+    "Conduit Flow": ["Q_n"],
+    "Ice Flow": ["u_ice_bar"],
+    "Plume Flow": ["q_w_p_n", "q_s_p_n"],
+    "Intracauldron Flow": ["q_c_n"],
+    "Supraglacial Flow": ["q_s_n"],
+    "Subglacial Flow": ["q_d_n"],
 }
 
 # Linking Groups: the volume panels share one y dimension (linked x and y); every time-series
@@ -407,10 +407,23 @@ PANEL_VARS = {
 LINK_GROUP_XY = NAMES_LEFT[0:4]
 
 # Y-axis names replacing the variables' long names (shared names link y axes)
-PANEL_Y_LABELS = {**{name: "Volume" for name in LINK_GROUP_XY}, "Material Heights": "Material height"}
+PANEL_Y_LABELS = {
+    **{name: "Volume" for name in LINK_GROUP_XY},
+    "Material Heights": "Material height",
+    "Plume Flow": "Plume flow",
+}
 
 # Panels without model output yet: blank axes with these y labels, as (long name, model units)
-PLACEHOLDER_AXES = {"Sheet Volume": ("Volume", "m^3"), "Plume Flux": ("Plume flow", "kg/s")}
+PLACEHOLDER_AXES = {"Sheet Volume": ("Volume", "m^3")}
+
+# IceCauldron mode switch shown under each flow panel's title when show_flow_modes=True
+PANEL_MODES = {
+    "Conduit Flow": "conduit_inflow_mode",
+    "Ice Flow": "ice_inflow_mode",
+    "Plume Flow": "plume_flow_mode",
+    "Supraglacial Flow": "supraglacial_drainage_mode",
+    "Subglacial Flow": "subglacial_flow_mode",
+}
 
 # Formatting Groups (Which axes should have X-labels hidden?)
 HIDE_X_LABELS = [NAMES_LEFT[i] for i in (0, 2, 4, 6)] + NAMES_RIGHT[:-1]
@@ -423,30 +436,45 @@ def _placeholder(name: str, reason: str) -> pn.pane.Markdown:
     return pn.pane.Markdown(f"**{name}**\n\n*{reason}*", styles={"border": "1px solid #ccc"})
 
 
-def _inner_title(name: str):
-    """Hook drawing the panel title inside the axes frame (top-left), so stacked panels can sit flush."""
+def _inner_title(name: str, subtitle: str | None = None):
+    """Hook drawing the panel title (and optional smaller subtitle below it) inside the axes frame
+    (top-left), so stacked panels can sit flush."""
 
     def hook(plot, element):
         fig = plot.state
-        fig.add_layout(
-            Label(
-                x=Node(target="frame", symbol="left", offset=6),
-                y=Node(target="frame", symbol="top", offset=4),
-                anchor="top_left",
-                text=name,
-                text_font_size="11pt",
-                text_font_style="bold",
-                background_fill_color="white",
-                background_fill_alpha=0.7,
+        lines = [(name, "11pt", "bold", 4)] + ([(subtitle, "9pt", "normal", 22)] if subtitle else [])
+        for text, size, style, offset in lines:
+            fig.add_layout(
+                Label(
+                    x=Node(target="frame", symbol="left", offset=6),
+                    y=Node(target="frame", symbol="top", offset=offset),
+                    anchor="top_left",
+                    text=text,
+                    text_font_size=size,
+                    text_font_style=style,
+                    background_fill_color="white",
+                    background_fill_alpha=0.7,
+                )
             )
-        )
         fig.min_border_top = 5
         fig.min_border_bottom = 5
 
     return hook
 
 
-def _panel(name: str, runs: dict, hide_x: bool, display_units: Mapping) -> pn.viewable.Viewable:
+def _mode_subtitle(name: str, runs: dict) -> str | None:
+    """'(mode: ...)' for a flow panel, from each run's IceCauldron mode switch; per run if they differ."""
+    if name not in PANEL_MODES:
+        return None
+    modes = {run: getattr(result.gv, PANEL_MODES[name]) for run, result in runs.items()}
+    if len(set(modes.values())) == 1:
+        return f"(mode: {next(iter(modes.values()))})"
+    return "(modes: " + "; ".join(f"{run}: {mode}" for run, mode in modes.items()) + ")"
+
+
+def _panel(
+    name: str, runs: dict, hide_x: bool, display_units: Mapping, show_flow_modes: bool = False
+) -> pn.viewable.Viewable:
     """One named dashboard panel."""
     panel_vars = PANEL_VARS[name]
     title = name
@@ -474,7 +502,8 @@ def _panel(name: str, runs: dict, hide_x: bool, display_units: Mapping) -> pn.vi
         plot = plot_time_series(runs, panel_vars, y_label=PANEL_Y_LABELS.get(name), display_units=display_units)
     if hide_x:
         plot = plot.opts(xaxis="bare")
-    plot = plot.opts(responsive=True, show_grid=True, hooks=[_inner_title(title)])
+    subtitle = _mode_subtitle(name, runs) if show_flow_modes else None
+    plot = plot.opts(responsive=True, show_grid=True, hooks=[_inner_title(title, subtitle)])
     # Wide side margins leave room to scroll the page between columns without zooming an axis
     return pn.pane.HoloViews(plot, sizing_mode="stretch_both", margin=(5, 30))
 
@@ -485,6 +514,7 @@ def plot_results(
     display_units: Mapping | None = None,
     ncols: int = 3,
     height: int = 1000,
+    show_flow_modes: bool = False,
 ) -> pn.viewable.Viewable:
     """Results dashboard for one or more model runs.
 
@@ -492,6 +522,8 @@ def plot_results(
                     pairs, beside a column of 6 flow panels; plus a Geometry tab), or a list of panel names (see
                     PANEL_VARS) to show only those, in order, in an ncols-wide grid.
     display_units = optional overrides/additions to DISPLAY_UNITS, e.g. {"s": ("min", 1/60)}
+    show_flow_modes = if True, flow panels show their IceCauldron mode switch (PANEL_MODES) under
+                    the title
     Returns a Panel layout - display it in a notebook, or call .show() from a script.
     """
     display_units = {**DISPLAY_UNITS, **(display_units or {})}
@@ -505,7 +537,7 @@ def plot_results(
     )
 
     if panels is not None:
-        items = [_panel(p, runs, hide_x=False, display_units=display_units) for p in panels]
+        items = [_panel(p, runs, False, display_units, show_flow_modes) for p in panels]
         for item in items:
             item.height = height // 3
         grid = pn.GridBox(*items, ncols=ncols, sizing_mode="stretch_width")
@@ -518,9 +550,9 @@ def plot_results(
         pair, j = divmod(i, 2)
         row = 6 * (pair // 2) + 3 * j
         col = pair % 2
-        grid[row : row + 3, col] = _panel(name, runs, name in HIDE_X_LABELS, display_units)
+        grid[row : row + 3, col] = _panel(name, runs, name in HIDE_X_LABELS, display_units, show_flow_modes)
     for i, name in enumerate(NAMES_RIGHT):
-        grid[2 * i : 2 * i + 2, 2] = _panel(name, runs, name in HIDE_X_LABELS, display_units)
+        grid[2 * i : 2 * i + 2, 2] = _panel(name, runs, name in HIDE_X_LABELS, display_units, show_flow_modes)
 
     # Geometry tab: geometry panel on the left (65% width), the other panels stacked on the right
     geometry_grid = pn.GridSpec(sizing_mode="stretch_width", height=height // 2)

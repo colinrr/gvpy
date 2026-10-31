@@ -148,6 +148,27 @@ intentional, flagged decisions).
   were corrected: `get_elliptical_cylinder_sa(a, c)` takes arrays, and
   `plume_emulator` is `list[dict]` (the emulator exporter writes a list of trees).
 
+### Plume flows and magma source split (user-approved, new - no MATLAB counterpart)
+
+- **`plume_flow_mode`** (replaces `disable_plume_flux`): `"off"` returns
+  per-cauldron zeros for `(h_m, q_w_p_n, q_s_p_n)`; `"test-fixed"` returns a
+  fixed `SmoothTopHat` time profile (10 min cosine rise, 30 min plateau, 1 h
+  logistic tail - temporary constants in `get_test_flows`) starting at each
+  cauldron's `open_time`, peaking at that cauldron's vent input:
+  `Q_n(1-n_w)/rho_p` pyroclasts and `Q_n n_w/RHO_W` water. `h_m = 345 *
+  (rho_p q_s_p_n)^0.226` (pyroclast mass flow, kg/s). `"emulator"` raises
+  `NotImplementedError`.
+- **`get_plume_flows` signature**: now `(t, Ze_n, Q_n, a_n, L_n)` and returns
+  3 per-cauldron VOLUME flows (m3/s), not MATLAB's 6 values in mass units.
+- **New fields**: `n_w` (magmatic water mass fraction, default 0.04) and the
+  per-cauldron state `open_time` (s, NaN until open), set in `parse_events`
+  alongside `open_cauldron`.
+- **Equation change in `glaciovolcano`**: the magma source is split by `n_w` -
+  `n_w Q_n / RHO_W` into `dV_w_dt`, `(1-n_w) Q_n / rho_p` into `dV_p_dt`
+  (MATLAB put all of `Q_n / rho_p` into pyroclasts) - and the plume flows are
+  subtracted from each. This changes `"off"`-mode results too (by `n_w`).
+- `par` also exposes `h_m`, `q_w_p_n`, `q_s_p_n`.
+
 ### `S_spheroid.m` -> `utilities/geometry.py::s_spheroid` (user-approved corrections)
 
 - Scalar `a` and scalar `c` with x/z outputs errored in MATLAB (`a_vec` never
@@ -257,7 +278,7 @@ visibility since some of these make entire code paths currently unusable.
   `plume_emulator_json = "hydroplume_emulator_2025-04-22.json"` was removed
   from the repo (disk space, per project direction) - the `get_plume_flows`
   random-forest path can't be exercised end-to-end until it's restored (with
-  corrections) as a future task. The `disable_plume_flow` zeros-path is the
+  corrections) as a future task. The `plume_flow_mode="off"` zeros-path is the
   reliable path for now.
 - **`get_u_tip` recomputes the Nikuradse roughness height locally** rather
   than reusing `self.k_nikuradse` (computed identically in

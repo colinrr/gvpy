@@ -41,6 +41,7 @@ from .subglacial import (
 from .utilities.constants import ThermoConstants
 from .utilities.geometry import get_elliptical_cylinder_sa
 from .utilities.math_helpers import (
+    SmoothTopHat,  # used by get_plume_flows ("test-fixed" mode)
     smooth_union,  # used by get_l_lambda (subglacial drainage, in development)
 )
 from .utilities.melting import get_elliptic_heat_intensity
@@ -94,12 +95,14 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "rho_m":              {"units": "kg/m^3", "long_name": "Magma density", "symbol": "rho_m"},
     "rho_p":              {"units": "kg/m^3", "long_name": "Erupted pyroclast density", "symbol": "rho_p"},
     "rho_r":              {"units": "kg/m^3", "long_name": "Lithic rock density", "symbol": "rho_r"},
+    "n_w":                {"units": "1",      "long_name": "Magmatic water mass fraction", "symbol": "n_w"},
     # ---- Fields: flood/discharge properties ----
     "fixed_phi_p":        {"units": "1",      "long_name": "Fixed volume fraction of pyroclasts in flood", "symbol": "phi_p"},
     "manning_roughness":  {"units": "m^(-1/3)*s", "long_name": "Manning's friction coefficient", "symbol": "n_M"},
     # ---- Fields: calculated/determined internally ----
     "open_cauldron":      {"units": None,     "long_name": "Cauldron roof open", "symbol": None},
     "ice_free_cauldron":  {"units": None,     "long_name": "Initial ice mass completely melted", "symbol": None},
+    "open_time":          {"units": "s",      "long_name": "Cauldron opening time", "symbol": "t_open"},
     "chi":                {"units": "m^3/kg", "long_name": "Max volume of ice meltable per kg magma", "symbol": "chi"},
     "t_Qdecay":           {"units": "s",      "long_name": "Time at which eruption mass flow begins to decay", "symbol": "t_Qdecay"},
     "tau_ND":             {"units": "s",      "long_name": "Non-dimensional time scale", "symbol": "tau_ND"},
@@ -116,8 +119,10 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "t_final":            {"units": "s",      "long_name": "End time", "symbol": "t_final"},
     "timesteps":          {"units": None,     "long_name": "Output timesteps", "symbol": None},
     "flood_density_model": {"units": None,    "long_name": "Flood fluid density model", "symbol": None},
+    "conduit_inflow_mode": {"units": None,    "long_name": "Conduit (magma) inflow mode", "symbol": None},
     "ice_inflow_mode":    {"units": None,     "long_name": "Ice inflow mode", "symbol": None},
     "supraglacial_drainage_mode": {"units": None, "long_name": "Supraglacial drainage mode", "symbol": None},
+    "subglacial_flow_mode": {"units": None,   "long_name": "Subglacial flow mode", "symbol": None},
     "plume_flow_mode":    {"units": None,     "long_name": "Plume flows run mode", "symbol": None},
     "terminal_condition": {"units": None,     "long_name": "Terminal condition", "symbol": None},
     "plume_emulator_json": {"units": None,    "long_name": "Plume emulator JSON file", "symbol": None},
@@ -161,6 +166,9 @@ ICE_CAULDRON_VAR_INFO: dict = {
     "phi_w":              {"units": "1",      "long_name": "Drainage water volume fraction", "symbol": "phi_w"},
     "phi_p":              {"units": "1",      "long_name": "Drainage pyroclast volume fraction", "symbol": "phi_p"},
     "phi_r":              {"units": "1",      "long_name": "Drainage lithic volume fraction", "symbol": "phi_r"},
+    "h_m":                {"units": "m",      "long_name": "Plume height", "symbol": "h_m"},
+    "q_w_p_n":            {"units": "m^3/s",  "long_name": "Plume water flow", "symbol": "q_{w,p}"},
+    "q_s_p_n":            {"units": "m^3/s",  "long_name": "Plume pyroclast flow", "symbol": "q_{s,p}"},
     # ---- Solver outputs: events ----
     "indexName":          {"units": None,     "long_name": "Event name", "symbol": None},
     "cauldronIndex":      {"units": None,     "long_name": "Event cauldron index", "symbol": None},
@@ -259,6 +267,8 @@ class IceCauldron:
                                        validator = attrs_validate_nonnegative)
     rho_r: Number        = attrs.field(default   = 2500.0, # (kg/m3) Lithic rock density
                                        validator = attrs_validate_nonnegative)
+    n_w: Number          = attrs.field(default   = 0.04, # (-) Assumed magmatic water mass fraction
+                                       validator = attrs_range_inclusive(0, 1))
 
     # ----- Flood/discharge properties ---------
     fixed_phi_p: Number       = attrs.field(default   = 0.4, # (-) Fixed volume fraction of pyroclasts in flood (flood_density_model = 2,3 only)
@@ -269,6 +279,7 @@ class IceCauldron:
     # ----- Calculated/determined internally - generally don't touch -----
     open_cauldron: PerCauldronInput = False  # Whether or not cauldron roof is open
     ice_free_cauldron: PerCauldronInput = False  # Whether initial ice mass has been completely melted
+    open_time: PerCauldronInput = np.nan  # (s) Time at which cauldron roof opened (NaN until open)
 
     # TRANSLATION NOTE: open_cauldron/ice_free_cauldron are per-cauldron mutable simulation
     # state that changes during the ODE solve via events (see CLAUDE.md's Data Structures
@@ -305,9 +316,14 @@ class IceCauldron:
     non_dimensionalized: bool = False  # If we can get a non-dim version running
     t_final: Number = 3 * 3600  # End time (TODO: in normalized units of tau_m - prob becomes dynamic with Q history)
     timesteps: int = 2001  # Output timesteps
+    terminal_condition: str = "default"  # "default", "t_final"
 
+    # ------ FLOW MODES FOR MODEL COMPONENTS ------
     # Switch for flood fluid density model (see IceCauldron.drainageDensity.m)
     flood_density_model: int = attrs.field(default=4, validator=attrs_range_inclusive(1, 6))  # {1,...,6}
+
+    # Magma inflow from the conduit - only constant (Q_n) inflow exists for now, always active
+    conduit_inflow_mode: str = "constant"  # "constant"
 
     # Turn on/off ice flow into cauldrons - ice flow velocity fixed to 0
     ice_inflow_mode: str = "off"  # "fixed-glen", "off"
@@ -315,10 +331,13 @@ class IceCauldron:
     # Turn on/off sup. flow out of cauldrons
     supraglacial_drainage_mode: str = "overflow"  # "overflow", "off"
 
+    # Subglacial (and inter-cauldron) drainage flows - only "off" (zero flows) exists for now
+    subglacial_flow_mode: str = "off"  # "off"
+
     # Set plume flow on/off/test mode. Off disables all plume material flows (water, pyroclasts) 
     # and dimensions will be fixed to 0. Defaults to off until re-implemented.
-    plume_flow_mode: str = "off"  # "emulator" (OutOfOrder), "off", "test". Eventually could have classic "interp"
-    terminal_condition: str = "default"  # "default", "t_final"
+    plume_flow_mode: str = "off"  # "emulator" (OutOfOrder), "off", "test-fixed". Eventually could have classic "interp"
+
     plume_emulator_json: str = "hydroplume_emulator_2025-04-22.json"  # JSON containing random forest emulator parameters
     plume_emulator: list[dict] | None = attrs.field(init=False, default=None)  # Structure array containing random forest parameters
 
@@ -333,7 +352,7 @@ class IceCauldron:
     # corresponding self.horizontalMeltingRate_n) - these are left in their original MATLAB
     # casing since they must stay consistent with matching string keys in not-yet-translated
     # code (e.g. getVarLabels.m uses the same camelCase keys).
-    per_cauldron_fields: ClassVar[tuple] = ("L_n", "G_n", "z_b_n", "L_d_n", "open_cauldron", "ice_free_cauldron")
+    per_cauldron_fields: ClassVar[tuple] = ("L_n", "G_n", "z_b_n", "L_d_n", "open_cauldron", "ice_free_cauldron", "open_time")
     # Vars directly solved in ode integrator
     vector_solution_vars: ClassVar[tuple] = ("a_n", "c_n", "V_ice_n", "V_w_n", "V_p_n")  # Per cauldron
     scalar_solution_vars: ClassVar[tuple] = ()  # 1 each
@@ -352,6 +371,14 @@ class IceCauldron:
         "H_cum_n",
     )
     scalar_derived_vars: ClassVar[tuple] = ()
+    # Implemented modes for each flow mode switch (checked in __attrs_post_init__)
+    allowed_flow_modes: ClassVar[dict] = {
+        "conduit_inflow_mode":          ("constant",),
+        "ice_inflow_mode":              ("fixed-glen", "off"),
+        "supraglacial_drainage_mode":   ("overflow", "off"),
+        "subglacial_flow_mode":         ("off",),
+        "plume_flow_mode":              ("off", "test-fixed"),
+    }
     # Helpers determined internally
     # (fastest_cauldron_index, slowest_cauldron_index are real per-instance fields, above)
 
@@ -361,6 +388,10 @@ class IceCauldron:
         """Initiate IceCauldron object."""
         # per-cauldron broadcast/validation behavior applied explicitly per field, plus the 
         # secondary-constants calculations that followed it in the MATLAB source.
+
+        for name, allowed in self.allowed_flow_modes.items():
+            if getattr(self, name) not in allowed:
+                raise ValueError(f"{name} = {getattr(self, name)!r} is not one of the allowed modes {allowed}.")
 
         # ---- Build per-cauldron parameter Dataset (user-supplied + computed secondary) ----
         cauldron = np.arange(self.n_cauldrons)
@@ -377,8 +408,8 @@ class IceCauldron:
 
         # State fields - broadcast to per-cauldron arrays, kept separate from self.params (see
         # TRANSLATION NOTE on open_cauldron/ice_free_cauldron above).
-        for name in ("open_cauldron", "ice_free_cauldron"):
-            value = np.asarray(getattr(self, name))
+        for name in ("open_cauldron", "ice_free_cauldron", "open_time"):
+            value = np.asarray(getattr(self, name), dtype=float if name == "open_time" else None)
             if value.ndim == 0:
                 value = np.full(self.n_cauldrons, value)
             else:
@@ -445,7 +476,7 @@ class IceCauldron:
 
         lines.append("\nPer-cauldron parameters:")
         lines.append("  " + str(self.params).replace("\n", "\n  "))
-        for name in ("open_cauldron", "ice_free_cauldron"):
+        for name in ("open_cauldron", "ice_free_cauldron", "open_time"):
             lines.append(f"  {name} = {getattr(self, name)!r}")
 
         if verbose:
@@ -960,7 +991,7 @@ class IceCauldron:
 
     # ------------------------------- PLUME ---------------------------------
     # Translated from @IceCauldron/getPlumeFluxes.m
-    def get_plume_flows(self, Ze_n: ArrayLike, Q_n: ArrayLike, a_n: ArrayLike, L_n: ArrayLike) -> tuple[np.ndarray, ...]:
+    def get_plume_flows(self, t: float, Ze_n: ArrayLike, Q_n: ArrayLike, a_n: ArrayLike, L_n: ArrayLike) -> tuple[np.ndarray, ...]:
         """[h_m, r_C, qw0, qwC, qs0, qsC] = getPlumeFluxes(obj, Ze, Q, a, L)
         Given matched vector of Ze, Q, return 6 plume flow/length values:
         Input:
@@ -993,19 +1024,27 @@ class IceCauldron:
         # predictForest's (1,6) row), but linear-indexes both identically as flows(1)..flows(6).
         # Unified here to a flat length-6 array for both branches, consistent with this project's
         # convention of not carrying MATLAB's row/column distinction into Python.
-        def get_test_flows(Ze_n: ArrayLike, Q_n: ArrayLike, a_n: ArrayLike, L_n: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            """Return test flows for the 'test' plume_flow_mode."""
-            h_m = 1000 * np.ones_like(Ze_n)  # Plume height (m)
-            q_w_p_n = 0.5 * Q_n  # Net water flow (kg/s)
-            q_s_p_n = 0.5 * Q_n  # Net pyrocast plume flow (kg/s)
+        #
+        # NOTE: the active ("off", "test-fixed") branches return (h_m, q_w_p_n, q_s_p_n) as
+        # per-cauldron VOLUME flows (m3/s), not the mass flows (kg/s) listed in the docstring.
+        def get_test_flows(t: float, Q_n: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            """Return fixed test flows for the 'test-fixed' plume_flow_mode: a smoothed top hat
+            in time, starting when each cauldron opens, peaking at that cauldron's vent input."""
+            # Temporary fixed time scales (s)
+            profile = SmoothTopHat(rise_length=10 * 60, flat_length=30 * 60, tail_length=60 * 60)
+            shape_n = np.where(self.open_cauldron, profile(t - self.open_time), 0.0)
+
+            q_s_p_n = shape_n * Q_n * (1 - self.n_w) / self.rho_p  # Net pyroclast plume flow (m3/s)
+            q_w_p_n = shape_n * Q_n * self.n_w / self.CONSTANTS.RHO_W  # Net water plume flow (m3/s)
+            h_m = 345 * (self.rho_p * q_s_p_n) ** 0.226  # Plume height (m), from pyroclast mass flow (kg/s)
 
             return h_m, q_w_p_n, q_s_p_n
-        
-        if self.plume_flow_mode == "off":
-            flows = np.zeros((3, self.n_cauldrons)).squeeze()
 
-        elif self.plume_flow_mode == "test":
-            h_m, q_w_p_n, q_s_p_n = get_test_flows(Ze_n=Ze_n, Q_n=Q_n, a_n=a_n, L_n=L_n)
+        if self.plume_flow_mode == "off":
+            h_m, q_w_p_n, q_s_p_n = np.zeros((3, self.n_cauldrons))
+
+        elif self.plume_flow_mode == "test-fixed":
+            h_m, q_w_p_n, q_s_p_n = get_test_flows(t=t, Q_n=Q_n)
 
         elif self.plume_flow_mode == "emulator":
             raise NotImplementedError("Plume emulator mode is in revamp and not yet implemented in this translation.")
@@ -1365,8 +1404,9 @@ class IceCauldron:
         # TRANSLATION NOTE: not implemented in the MATLAB source either - this only returns dummy
         # zero flows and ignores all of its inputs (phi_w, P_w, H_w_n, H_cum_n). The actual
         # subglacial + inter-cauldron drainage flow calculation remains to be written.
-        q_d_n = np.zeros(self.n_cauldrons)  # dummy for now
-        q_c_n = np.zeros(self.n_cauldrons)  # dummy for now
+        if self.subglacial_flow_mode == "off":
+            q_d_n = np.zeros(self.n_cauldrons)  # dummy for now
+            q_c_n = np.zeros(self.n_cauldrons)  # dummy for now
 
         # q_s_n = zeros(gv.nCauldrons,1); % dummy for now
 
